@@ -12,4 +12,5 @@ dependencies = [
     "adafruit-blinka",
     "adafruit-circuitpython-dht",
     "gunicorn",
+    "RPi.GPIO",
 ]
