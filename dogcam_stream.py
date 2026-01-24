@@ -28,11 +28,7 @@ BUTTON_PIN = 17  # GPIO17 (Physical Pin 11)
 USE_BUTTON = os.getenv('USE_BUTTON', 'false').lower() == 'true'
 stream_enabled = not USE_BUTTON  # If button enabled, stream starts OFF to save power
 stream_lock = threading.Lock()
-
-if USE_BUTTON:
-    GPIO.setmode(GPIO.BCM)
-    GPIO.setup(BUTTON_PIN, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
-    print("Button enabled: Stream starts OFF. Press button to turn ON.")
+gpio_initialized = False
 
 
 class StreamingOutput(io.BufferedIOBase):
@@ -63,9 +59,18 @@ def button_callback(channel):
             print(f"Stream {'enabled' if stream_enabled else 'disabled'}")
 
 
-# Setup button event detection (only if enabled)
-if USE_BUTTON:
-    GPIO.add_event_detect(BUTTON_PIN, GPIO.RISING, callback=button_callback, bouncetime=300)
+def initialize_gpio():
+    """Initialize GPIO after worker fork (for gunicorn compatibility)"""
+    global gpio_initialized
+    if USE_BUTTON and not gpio_initialized:
+        try:
+            GPIO.setmode(GPIO.BCM)
+            GPIO.setup(BUTTON_PIN, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
+            GPIO.add_event_detect(BUTTON_PIN, GPIO.RISING, callback=button_callback, bouncetime=300)
+            gpio_initialized = True
+            print("Button enabled: Stream starts OFF. Press button to turn ON.")
+        except Exception as e:
+            print(f"Failed to initialize GPIO: {e}")
 
 
 def cleanup():
@@ -89,6 +94,12 @@ def gen():
             frame = output.frame
         yield (b'--frame\r\n'
                b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
+
+
+@app.before_request
+def before_first_request():
+    """Initialize GPIO on first request (after worker fork)"""
+    initialize_gpio()
 
 
 @app.route('/')
