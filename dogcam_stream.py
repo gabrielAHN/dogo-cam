@@ -5,6 +5,7 @@ import threading
 import atexit
 import board
 import adafruit_dht
+import RPi.GPIO as GPIO
 from dotenv import load_dotenv
 from flask import Flask, Response, render_template, request
 from flask_httpauth import HTTPBasicAuth
@@ -21,6 +22,12 @@ viewer_semaphore = threading.Semaphore(int(os.getenv('MAX_VIEWERS', 3)))
 
 dht_device = adafruit_dht.DHT22(board.D4)
 dht_lock = threading.Lock()
+
+BUTTON_PIN = 17
+USE_BUTTON = os.getenv('USE_BUTTON', 'false').lower() == 'true'
+stream_enabled = not USE_BUTTON
+stream_lock = threading.Lock()
+gpio_initialized = False
 
 
 class StreamingOutput(io.BufferedIOBase):
@@ -41,8 +48,32 @@ camera.configure(camera.create_video_configuration(main={"size": (640, 480)}))
 camera.start_recording(JpegEncoder(), FileOutput(output))
 
 
+def button_callback(channel):
+    global stream_enabled
+    time.sleep(0.05)
+    if GPIO.input(BUTTON_PIN) == GPIO.HIGH:
+        with stream_lock:
+            stream_enabled = not stream_enabled
+
+
+def initialize_gpio():
+    global gpio_initialized, stream_enabled, USE_BUTTON
+    if USE_BUTTON and not gpio_initialized:
+        try:
+            GPIO.setmode(GPIO.BCM)
+            GPIO.setup(BUTTON_PIN, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
+            test_read = GPIO.input(BUTTON_PIN)
+            GPIO.add_event_detect(BUTTON_PIN, GPIO.RISING, callback=button_callback, bouncetime=300)
+            gpio_initialized = True
+        except Exception:
+            USE_BUTTON = False
+            stream_enabled = True
+
+
 def cleanup():
     camera.stop_recording()
+    if USE_BUTTON:
+        GPIO.cleanup()
 
 
 atexit.register(cleanup)
@@ -62,6 +93,11 @@ def gen():
                b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
 
 
+@app.before_request
+def before_first_request():
+    initialize_gpio()
+
+
 @app.route('/')
 @auth.login_required
 def index():
@@ -72,6 +108,10 @@ def index():
 @app.route('/video_feed')
 @auth.login_required
 def video_feed():
+    with stream_lock:
+        if not stream_enabled:
+            return "Stream is currently disabled. Press the button to enable.", 503
+
     if not viewer_semaphore.acquire(blocking=False):
         return "Max viewers reached. Try again later.", 503
     try:
@@ -98,3 +138,11 @@ def temp():
             except Exception as error:
                 return f"Error: {str(error)}"
     return "Data unavailable. Retrying soon..."
+
+
+@app.route('/stream_status')
+@auth.login_required
+def stream_status():
+    with stream_lock:
+        status = "🟢 Stream Active" if stream_enabled else "🔴 Stream Paused"
+        return status

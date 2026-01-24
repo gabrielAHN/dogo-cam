@@ -3,7 +3,10 @@
 
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="mobile-web-app-capable" content="yes">
     <title>{{ dog_name }} Stream</title>
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto:wght@700&display=swap">
     <script src="https://unpkg.com/htmx.org@1.9.10"></script>
@@ -16,6 +19,15 @@
             overflow: hidden;
             background-color: #000;
 
+        }
+
+        #video-container {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: relative;
         }
 
         h1 {
@@ -33,7 +45,7 @@
         img {
             width: 100%;
             height: 100%;
-            object-fit: cover;
+            object-fit: contain;
             display: block;
         }
 
@@ -46,15 +58,176 @@
             z-index: 10;
             font-family: 'Roboto', sans-serif;
         }
+
+        #stream-status {
+            color: #fff;
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            z-index: 11;
+            font-family: 'Roboto', sans-serif;
+            background-color: rgba(0, 0, 0, 0.6);
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: 14px;
+        }
+
+        #fullscreen-btn {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            z-index: 11;
+            background-color: rgba(0, 0, 0, 0.6);
+            color: #fff;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-radius: 8px;
+            padding: 12px 16px;
+            font-size: 24px;
+            cursor: pointer;
+            font-family: 'Roboto', sans-serif;
+            transition: all 0.3s ease;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        #fullscreen-btn:hover {
+            background-color: rgba(0, 0, 0, 0.8);
+            border-color: rgba(255, 255, 255, 0.6);
+        }
+
+        #fullscreen-btn:active {
+            transform: scale(0.95);
+        }
+
+        body:fullscreen #fullscreen-btn,
+        body:-webkit-full-screen #fullscreen-btn,
+        body:-moz-full-screen #fullscreen-btn,
+        body:-ms-fullscreen #fullscreen-btn {
+            opacity: 0.3;
+        }
+
+        body:fullscreen #fullscreen-btn:hover,
+        body:-webkit-full-screen #fullscreen-btn:hover,
+        body:-moz-full-screen #fullscreen-btn:hover,
+        body:-ms-fullscreen #fullscreen-btn:hover {
+            opacity: 1;
+        }
+        body.mobile-fullscreen {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+            z-index: 9999;
+        }
+
+        body.mobile-fullscreen h1,
+        body.mobile-fullscreen #temp,
+        body.mobile-fullscreen #stream-status {
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.3s;
+        }
+
+        body.mobile-fullscreen #fullscreen-btn {
+            opacity: 0.3;
+        }
+
+        body.mobile-fullscreen #fullscreen-btn:active {
+            opacity: 1;
+        }
     </style>
 </head>
 
 <body>
-    <h1>{{ dog_name }} Stream</h1>
-    <img src="{{ url_for('video_feed') }}" alt="Live Dog Cam">
-    <div id="temp" hx-get="/temp" hx-trigger="load, every 10s" hx-swap="innerHTML">
-        Loading temperature...
+    <div id="video-container">
+        <h1>{{ dog_name }} Stream</h1>
+        <div id="stream-status" hx-get="/stream_status" hx-trigger="load, every 2s" hx-swap="innerHTML">
+            Checking status...
+        </div>
+        <button id="fullscreen-btn" title="Toggle Fullscreen">⛶</button>
+        <img src="{{ url_for('video_feed') }}" alt="Live Dog Cam">
+        <div id="temp" hx-get="/temp" hx-trigger="load, every 10s" hx-swap="innerHTML">
+            Loading temperature...
+        </div>
     </div>
+
+    <script>
+        const fullscreenBtn = document.getElementById('fullscreen-btn');
+        const container = document.body;
+        const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+        let mobileFullscreen = false;
+
+        function isFullscreen() {
+            return !!(document.fullscreenElement || document.webkitFullscreenElement ||
+                     document.mozFullScreenElement || document.msFullscreenElement || mobileFullscreen);
+        }
+
+        function enterMobileFullscreen() {
+            document.body.classList.add('mobile-fullscreen');
+            mobileFullscreen = true;
+            window.scrollTo(0, 1);
+            if (screen.orientation && screen.orientation.lock) {
+                screen.orientation.lock('landscape').catch(() => {});
+            }
+        }
+
+        function exitMobileFullscreen() {
+            document.body.classList.remove('mobile-fullscreen');
+            mobileFullscreen = false;
+            window.scrollTo(0, 0);
+            if (screen.orientation && screen.orientation.unlock) {
+                screen.orientation.unlock();
+            }
+        }
+
+        function enterFullscreen(element) {
+            if (element.requestFullscreen) {
+                return element.requestFullscreen();
+            } else if (element.webkitRequestFullscreen) {
+                return element.webkitRequestFullscreen();
+            } else if (element.mozRequestFullScreen) {
+                return element.mozRequestFullScreen();
+            } else if (element.msRequestFullscreen) {
+                return element.msRequestFullscreen();
+            }
+            return Promise.reject(new Error('Fullscreen not supported'));
+        }
+
+        function exitFullscreen() {
+            if (document.exitFullscreen) {
+                return document.exitFullscreen();
+            } else if (document.webkitExitFullscreen) {
+                return document.webkitExitFullscreen();
+            } else if (document.mozCancelFullScreen) {
+                return document.mozCancelFullScreen();
+            } else if (document.msExitFullscreen) {
+                return document.msExitFullscreen();
+            }
+            return Promise.reject(new Error('Exit fullscreen not supported'));
+        }
+
+        fullscreenBtn.addEventListener('click', () => {
+            if (!isFullscreen()) {
+                enterFullscreen(container).catch(() => enterMobileFullscreen());
+            } else {
+                if (mobileFullscreen) {
+                    exitMobileFullscreen();
+                } else {
+                    exitFullscreen();
+                }
+            }
+        });
+
+        document.addEventListener('fullscreenchange', updateFullscreenButton);
+        document.addEventListener('webkitfullscreenchange', updateFullscreenButton);
+        document.addEventListener('mozfullscreenchange', updateFullscreenButton);
+        document.addEventListener('MSFullscreenChange', updateFullscreenButton);
+
+        function updateFullscreenButton() {
+            fullscreenBtn.textContent = isFullscreen() ? '✕' : '⛶';
+        }
+    </script>
 </body>
 
 </html>

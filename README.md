@@ -36,6 +36,30 @@ Dependencies are managed with UV via a `pyproject.toml` file. The app runs on bo
 - Add a 4.7kΩ-10kΩ pull-up resistor between VCC and Data pins for signal stability.
 - Test: After software setup, run a simple script to verify readings (see Software Installation).
 
+### 3. Connect the KY-004 Button Module (Optional - Stream On/Off Control)
+- **OPTIONAL**: Only connect this if you want physical button control to save power
+- **Product Used**: [Youliang KY-004 3-Pin Button Key Tactile Switch Sensor](https://www.amazon.co.jp/dp/B07TBKTGR3)
+- **Reference**: [KY-004 Key Switch Module Documentation](https://arduinomodules.info/ky-004-key-switch-module/)
+- Wiring (power off Pi before connecting):
+
+| KY-004 Pin | Raspberry Pi Physical Pin | Function | Notes |
+|------------|---------------------------|----------|-------|
+| S (Signal) | Pin 11 | GPIO17 | Signal pin that goes HIGH when button is pressed |
+| Middle (VCC) | Pin 17 | 3.3V Power | Powers the button module |
+| - (GND) | Pin 14 | Ground | Completes the circuit |
+
+- **How It Works**:
+  - Set `USE_BUTTON=true` in `.env` to enable button control
+  - If button hardware is connected: Stream starts OFF (saves power) - press button to turn ON/OFF
+  - If button hardware NOT connected: Automatically falls back to always-on stream mode
+  - When disabled (`USE_BUTTON=false`), stream is always ON (no button needed)
+  - **Smart Fallback**: Even with `USE_BUTTON=true`, if the button isn't plugged in, the app will detect this and run the stream continuously
+- **Specifications**:
+  - Operating voltage: 3.3V-5V
+  - Tactile button rated for 100,000 cycles
+  - Built-in 10kΩ resistor
+- Test: After software setup, pressing the button should toggle the stream on/off.
+
 ## Software Installation
 
 ### 1. Raspberry Pi APT Installs
@@ -64,6 +88,7 @@ Dependencies are managed with UV via a `pyproject.toml` file. The app runs on bo
   BASIC_AUTH_PASSWORD=your_password
   MAX_VIEWERS=3
   PORT=5000
+  USE_BUTTON=true  # Set to 'true' to enable button control (stream starts OFF), 'false' for always-on stream
   ```
 
 ### 4. Manage Dependencies with `pyproject.toml`
@@ -83,6 +108,7 @@ Dependencies are managed with UV via a `pyproject.toml` file. The app runs on bo
       "adafruit-circuitpython-dht",
       "adafruit-blinka",
       "gunicorn",  # For production server
+      "RPi.GPIO",  # For button control
   ]
   ```
 - Sync dependencies (creates/manages venv):
@@ -169,8 +195,31 @@ Expose the local app securely to your domain (e.g., `your-domain.com`) without p
 - Enable: `sudo systemctl enable --now cloudflared.service`
 - Check: `sudo systemctl status cloudflared.service`
 
+## Using the Button to Control the Stream
+
+The KY-004 button provides physical on/off control for the camera stream:
+
+1. **Toggle Stream**: Press the button to toggle between streaming ON and OFF states
+2. **Visual Feedback**: The web interface shows the current stream status:
+   - 🟢 Stream Active - Camera is streaming
+   - 🔴 Stream Paused - Camera is paused (button pressed to disable)
+3. **Status Updates**: The status indicator updates every 2 seconds via HTMX
+4. **Default State**: Stream starts enabled when the service boots
+
+### Testing the Button
+
+After completing the hardware and software setup:
+
+1. Start the service: `sudo systemctl start dog-stream.service`
+2. Access the web interface: `http://your-pi-ip:5000`
+3. Observe the stream status indicator in the top-left corner
+4. Press the physical button - the status should change and the stream should pause/resume
+5. Check logs for confirmation: `journalctl -u dog-stream.service -f`
+   - You should see messages like "Stream enabled" or "Stream disabled"
+
 ## Troubleshooting
 - Camera not starting: Ensure enabled in `raspi-config`; test with `libcamera-hello`.
 - Sensor errors: Verify pull-up resistor; retry logic in code handles checksum issues.
 - Access issues: Check auth creds in `.env`; monitor logs with `journalctl -u dog-stream.service`.
 - Performance: On RPi 3, lower video resolution if CPU/RAM high (edit code: `{"size": (320, 240)}`).
+- Button not working: Check GPIO connections; verify RPi.GPIO is installed; check logs for GPIO errors.
