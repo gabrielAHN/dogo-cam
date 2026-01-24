@@ -112,6 +112,33 @@
         body:-ms-fullscreen #fullscreen-btn:hover {
             opacity: 1;
         }
+
+        /* Mobile fullscreen simulation */
+        body.mobile-fullscreen {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+            z-index: 9999;
+        }
+
+        body.mobile-fullscreen h1,
+        body.mobile-fullscreen #temp,
+        body.mobile-fullscreen #stream-status {
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.3s;
+        }
+
+        body.mobile-fullscreen #fullscreen-btn {
+            opacity: 0.3;
+        }
+
+        body.mobile-fullscreen #fullscreen-btn:active {
+            opacity: 1;
+        }
     </style>
 </head>
 
@@ -132,32 +159,57 @@
         const fullscreenBtn = document.getElementById('fullscreen-btn');
         const container = document.body;
 
+        // Detect if mobile device
+        const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+
+        // Track mobile fullscreen state
+        let mobileFullscreen = false;
+
         // Function to check if currently in fullscreen
         function isFullscreen() {
             return !!(document.fullscreenElement ||
                      document.webkitFullscreenElement ||
                      document.mozFullScreenElement ||
-                     document.msFullscreenElement);
+                     document.msFullscreenElement ||
+                     mobileFullscreen);
+        }
+
+        // Mobile fullscreen using CSS
+        function enterMobileFullscreen() {
+            document.body.classList.add('mobile-fullscreen');
+            mobileFullscreen = true;
+            // Scroll to hide address bar
+            window.scrollTo(0, 1);
+            // Lock orientation to landscape if supported
+            if (screen.orientation && screen.orientation.lock) {
+                screen.orientation.lock('landscape').catch(() => {});
+            }
+        }
+
+        function exitMobileFullscreen() {
+            document.body.classList.remove('mobile-fullscreen');
+            mobileFullscreen = false;
+            window.scrollTo(0, 0);
+            // Unlock orientation
+            if (screen.orientation && screen.orientation.unlock) {
+                screen.orientation.unlock();
+            }
         }
 
         // Function to enter fullscreen with mobile support
         function enterFullscreen(element) {
+            // Try native fullscreen first (works on Android)
             if (element.requestFullscreen) {
                 return element.requestFullscreen();
             } else if (element.webkitRequestFullscreen) {
-                // iOS Safari
                 return element.webkitRequestFullscreen();
-            } else if (element.webkitEnterFullscreen) {
-                // Older iOS
-                return element.webkitEnterFullscreen();
             } else if (element.mozRequestFullScreen) {
-                // Firefox
                 return element.mozRequestFullScreen();
             } else if (element.msRequestFullscreen) {
-                // IE/Edge
                 return element.msRequestFullscreen();
             }
-            return Promise.reject(new Error('Fullscreen not supported'));
+            // If native fullscreen not supported, use mobile CSS fallback
+            return Promise.reject(new Error('Native fullscreen not supported'));
         }
 
         // Function to exit fullscreen with mobile support
@@ -176,11 +228,18 @@
 
         fullscreenBtn.addEventListener('click', () => {
             if (!isFullscreen()) {
-                enterFullscreen(container).catch(err => {
-                    console.log(`Error attempting fullscreen: ${err.message}`);
+                // Try native fullscreen first
+                enterFullscreen(container).catch(() => {
+                    // Fallback to mobile CSS fullscreen (for iOS)
+                    enterMobileFullscreen();
                 });
             } else {
-                exitFullscreen();
+                // Exit fullscreen (native or mobile)
+                if (mobileFullscreen) {
+                    exitMobileFullscreen();
+                } else {
+                    exitFullscreen();
+                }
             }
         });
 
@@ -191,7 +250,7 @@
         document.addEventListener('MSFullscreenChange', updateFullscreenButton);
 
         function updateFullscreenButton() {
-            fullscreenBtn.textContent = isFullscreen() ? '⛶' : '⛶';
+            fullscreenBtn.textContent = isFullscreen() ? '✕' : '⛶';
         }
     </script>
 </body>
