@@ -98,7 +98,6 @@
             transform: scale(0.95);
         }
 
-        /* Hide fullscreen button when in fullscreen mode */
         body:fullscreen #fullscreen-btn,
         body:-webkit-full-screen #fullscreen-btn,
         body:-moz-full-screen #fullscreen-btn,
@@ -112,8 +111,6 @@
         body:-ms-fullscreen #fullscreen-btn:hover {
             opacity: 1;
         }
-
-        /* Mobile fullscreen simulation */
         body.mobile-fullscreen {
             position: fixed;
             top: 0;
@@ -158,29 +155,18 @@
     <script>
         const fullscreenBtn = document.getElementById('fullscreen-btn');
         const container = document.body;
-
-        // Detect if mobile device
         const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
-
-        // Track mobile fullscreen state
         let mobileFullscreen = false;
 
-        // Function to check if currently in fullscreen
         function isFullscreen() {
-            return !!(document.fullscreenElement ||
-                     document.webkitFullscreenElement ||
-                     document.mozFullScreenElement ||
-                     document.msFullscreenElement ||
-                     mobileFullscreen);
+            return !!(document.fullscreenElement || document.webkitFullscreenElement ||
+                     document.mozFullScreenElement || document.msFullscreenElement || mobileFullscreen);
         }
 
-        // Mobile fullscreen using CSS
         function enterMobileFullscreen() {
             document.body.classList.add('mobile-fullscreen');
             mobileFullscreen = true;
-            // Scroll to hide address bar
             window.scrollTo(0, 1);
-            // Lock orientation to landscape if supported
             if (screen.orientation && screen.orientation.lock) {
                 screen.orientation.lock('landscape').catch(() => {});
             }
@@ -190,15 +176,12 @@
             document.body.classList.remove('mobile-fullscreen');
             mobileFullscreen = false;
             window.scrollTo(0, 0);
-            // Unlock orientation
             if (screen.orientation && screen.orientation.unlock) {
                 screen.orientation.unlock();
             }
         }
 
-        // Function to enter fullscreen with mobile support
         function enterFullscreen(element) {
-            // Try native fullscreen first (works on Android)
             if (element.requestFullscreen) {
                 return element.requestFullscreen();
             } else if (element.webkitRequestFullscreen) {
@@ -208,11 +191,9 @@
             } else if (element.msRequestFullscreen) {
                 return element.msRequestFullscreen();
             }
-            // If native fullscreen not supported, use mobile CSS fallback
-            return Promise.reject(new Error('Native fullscreen not supported'));
+            return Promise.reject(new Error('Fullscreen not supported'));
         }
 
-        // Function to exit fullscreen with mobile support
         function exitFullscreen() {
             if (document.exitFullscreen) {
                 return document.exitFullscreen();
@@ -228,13 +209,8 @@
 
         fullscreenBtn.addEventListener('click', () => {
             if (!isFullscreen()) {
-                // Try native fullscreen first
-                enterFullscreen(container).catch(() => {
-                    // Fallback to mobile CSS fullscreen (for iOS)
-                    enterMobileFullscreen();
-                });
+                enterFullscreen(container).catch(() => enterMobileFullscreen());
             } else {
-                // Exit fullscreen (native or mobile)
                 if (mobileFullscreen) {
                     exitMobileFullscreen();
                 } else {
@@ -243,7 +219,6 @@
             }
         });
 
-        // Update button icon based on fullscreen state (cross-browser)
         document.addEventListener('fullscreenchange', updateFullscreenButton);
         document.addEventListener('webkitfullscreenchange', updateFullscreenButton);
         document.addEventListener('mozfullscreenchange', updateFullscreenButton);

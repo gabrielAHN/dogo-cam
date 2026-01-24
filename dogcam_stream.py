@@ -23,10 +23,9 @@ viewer_semaphore = threading.Semaphore(int(os.getenv('MAX_VIEWERS', 3)))
 dht_device = adafruit_dht.DHT22(board.D4)
 dht_lock = threading.Lock()
 
-# Button setup for stream control (optional)
-BUTTON_PIN = 17  # GPIO17 (Physical Pin 11)
+BUTTON_PIN = 17
 USE_BUTTON = os.getenv('USE_BUTTON', 'false').lower() == 'true'
-stream_enabled = not USE_BUTTON  # If button enabled, stream starts OFF to save power
+stream_enabled = not USE_BUTTON
 stream_lock = threading.Lock()
 gpio_initialized = False
 
@@ -50,34 +49,25 @@ camera.start_recording(JpegEncoder(), FileOutput(output))
 
 
 def button_callback(channel):
-    """Toggle stream on/off when button is pressed"""
     global stream_enabled
-    time.sleep(0.05)  # Debounce delay
+    time.sleep(0.05)
     if GPIO.input(BUTTON_PIN) == GPIO.HIGH:
         with stream_lock:
             stream_enabled = not stream_enabled
-            print(f"Stream {'enabled' if stream_enabled else 'disabled'}")
 
 
 def initialize_gpio():
-    """Initialize GPIO after worker fork (for gunicorn compatibility)"""
     global gpio_initialized, stream_enabled, USE_BUTTON
     if USE_BUTTON and not gpio_initialized:
         try:
             GPIO.setmode(GPIO.BCM)
             GPIO.setup(BUTTON_PIN, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
-
-            # Test if button is actually connected by reading initial state
             test_read = GPIO.input(BUTTON_PIN)
-
             GPIO.add_event_detect(BUTTON_PIN, GPIO.RISING, callback=button_callback, bouncetime=300)
             gpio_initialized = True
-            print("Button hardware detected: Stream starts OFF. Press button to turn ON.")
-        except Exception as e:
-            print(f"Button hardware not detected or GPIO init failed: {e}")
-            print("Falling back to always-on stream mode (no button control)")
+        except Exception:
             USE_BUTTON = False
-            stream_enabled = True  # Enable stream since no button is available
+            stream_enabled = True
 
 
 def cleanup():
@@ -105,7 +95,6 @@ def gen():
 
 @app.before_request
 def before_first_request():
-    """Initialize GPIO on first request (after worker fork)"""
     initialize_gpio()
 
 
