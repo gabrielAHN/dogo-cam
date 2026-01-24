@@ -3,7 +3,10 @@
 
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="mobile-web-app-capable" content="yes">
     <title>{{ dog_name }} Stream</title>
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto:wght@700&display=swap">
     <script src="https://unpkg.com/htmx.org@1.9.10"></script>
@@ -129,20 +132,67 @@
         const fullscreenBtn = document.getElementById('fullscreen-btn');
         const container = document.body;
 
+        // Function to check if currently in fullscreen
+        function isFullscreen() {
+            return !!(document.fullscreenElement ||
+                     document.webkitFullscreenElement ||
+                     document.mozFullScreenElement ||
+                     document.msFullscreenElement);
+        }
+
+        // Function to enter fullscreen with mobile support
+        function enterFullscreen(element) {
+            if (element.requestFullscreen) {
+                return element.requestFullscreen();
+            } else if (element.webkitRequestFullscreen) {
+                // iOS Safari
+                return element.webkitRequestFullscreen();
+            } else if (element.webkitEnterFullscreen) {
+                // Older iOS
+                return element.webkitEnterFullscreen();
+            } else if (element.mozRequestFullScreen) {
+                // Firefox
+                return element.mozRequestFullScreen();
+            } else if (element.msRequestFullscreen) {
+                // IE/Edge
+                return element.msRequestFullscreen();
+            }
+            return Promise.reject(new Error('Fullscreen not supported'));
+        }
+
+        // Function to exit fullscreen with mobile support
+        function exitFullscreen() {
+            if (document.exitFullscreen) {
+                return document.exitFullscreen();
+            } else if (document.webkitExitFullscreen) {
+                return document.webkitExitFullscreen();
+            } else if (document.mozCancelFullScreen) {
+                return document.mozCancelFullScreen();
+            } else if (document.msExitFullscreen) {
+                return document.msExitFullscreen();
+            }
+            return Promise.reject(new Error('Exit fullscreen not supported'));
+        }
+
         fullscreenBtn.addEventListener('click', () => {
-            if (!document.fullscreenElement) {
-                container.requestFullscreen().catch(err => {
+            if (!isFullscreen()) {
+                enterFullscreen(container).catch(err => {
                     console.log(`Error attempting fullscreen: ${err.message}`);
                 });
             } else {
-                document.exitFullscreen();
+                exitFullscreen();
             }
         });
 
-        // Update button icon based on fullscreen state
-        document.addEventListener('fullscreenchange', () => {
-            fullscreenBtn.textContent = document.fullscreenElement ? '⛶' : '⛶';
-        });
+        // Update button icon based on fullscreen state (cross-browser)
+        document.addEventListener('fullscreenchange', updateFullscreenButton);
+        document.addEventListener('webkitfullscreenchange', updateFullscreenButton);
+        document.addEventListener('mozfullscreenchange', updateFullscreenButton);
+        document.addEventListener('MSFullscreenChange', updateFullscreenButton);
+
+        function updateFullscreenButton() {
+            fullscreenBtn.textContent = isFullscreen() ? '⛶' : '⛶';
+        }
     </script>
 </body>
 
