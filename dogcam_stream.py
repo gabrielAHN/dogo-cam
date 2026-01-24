@@ -61,16 +61,23 @@ def button_callback(channel):
 
 def initialize_gpio():
     """Initialize GPIO after worker fork (for gunicorn compatibility)"""
-    global gpio_initialized
+    global gpio_initialized, stream_enabled, USE_BUTTON
     if USE_BUTTON and not gpio_initialized:
         try:
             GPIO.setmode(GPIO.BCM)
             GPIO.setup(BUTTON_PIN, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
+
+            # Test if button is actually connected by reading initial state
+            test_read = GPIO.input(BUTTON_PIN)
+
             GPIO.add_event_detect(BUTTON_PIN, GPIO.RISING, callback=button_callback, bouncetime=300)
             gpio_initialized = True
-            print("Button enabled: Stream starts OFF. Press button to turn ON.")
+            print("Button hardware detected: Stream starts OFF. Press button to turn ON.")
         except Exception as e:
-            print(f"Failed to initialize GPIO: {e}")
+            print(f"Button hardware not detected or GPIO init failed: {e}")
+            print("Falling back to always-on stream mode (no button control)")
+            USE_BUTTON = False
+            stream_enabled = True  # Enable stream since no button is available
 
 
 def cleanup():

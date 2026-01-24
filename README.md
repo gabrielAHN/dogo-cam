@@ -50,9 +50,10 @@ Dependencies are managed with UV via a `pyproject.toml` file. The app runs on bo
 
 - **How It Works**:
   - Set `USE_BUTTON=true` in `.env` to enable button control
-  - When enabled, stream starts OFF (saves power) - press button to turn ON
-  - Press button again to toggle back to OFF
+  - If button hardware is connected: Stream starts OFF (saves power) - press button to turn ON/OFF
+  - If button hardware NOT connected: Automatically falls back to always-on stream mode
   - When disabled (`USE_BUTTON=false`), stream is always ON (no button needed)
+  - **Smart Fallback**: Even with `USE_BUTTON=true`, if the button isn't plugged in, the app will detect this and run the stream continuously
 - **Specifications**:
   - Operating voltage: 3.3V-5V
   - Tactile button rated for 100,000 cycles
