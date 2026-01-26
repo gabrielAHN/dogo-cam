@@ -20,8 +20,11 @@ auth = HTTPBasicAuth()
 camera = Picamera2()
 viewer_semaphore = threading.Semaphore(int(os.getenv('MAX_VIEWERS', 3)))
 
-dht_device = adafruit_dht.DHT22(board.D4)
+dht_device = None
 dht_lock = threading.Lock()
+last_dht_read = 0
+cached_temp = None
+cached_humidity = None
 
 BUTTON_PIN = 17
 USE_BUTTON = os.getenv('USE_BUTTON', 'false').lower() == 'true'
@@ -120,23 +123,53 @@ def video_feed():
         viewer_semaphore.release()
 
 
+def init_dht_sensor():
+    global dht_device
+    if dht_device is None:
+        dht_device = adafruit_dht.DHT22(board.D4)
+    return dht_device
+
+
 @app.route('/temp')
 @auth.login_required
 def temp():
-    max_retries = 5
+    global last_dht_read, cached_temp, cached_humidity
+
+    current_time = time.time()
+
     with dht_lock:
+
+        sensor = init_dht_sensor()
+
+
+        if current_time - last_dht_read < 3.0 and cached_temp is not None:
+            return f"Room Temp: {cached_temp}°C ({cached_temp * 9/5 + 32}°F) | Humidity: {cached_humidity}%"
+
+
+        max_retries = 5
         for attempt in range(max_retries):
             try:
-                temperature = dht_device.temperature
-                humidity = dht_device.humidity
+                temperature = sensor.temperature
+                humidity = sensor.humidity
                 if temperature is not None and humidity is not None:
+                    cached_temp = temperature
+                    cached_humidity = humidity
+                    last_dht_read = current_time
                     return f"Room Temp: {temperature}°C ({temperature * 9/5 + 32}°F) | Humidity: {humidity}%"
-            except RuntimeError:
+            except (RuntimeError, OSError):
                 if attempt < max_retries - 1:
-                    time.sleep(2)
+                    time.sleep(2.5)
                 continue
             except Exception as error:
+
+                if cached_temp is not None:
+                    return f"Room Temp: {cached_temp}°C ({cached_temp * 9/5 + 32}°F) | Humidity: {cached_humidity}% (cached)"
                 return f"Error: {str(error)}"
+
+
+        if cached_temp is not None:
+            return f"Room Temp: {cached_temp}°C ({cached_temp * 9/5 + 32}°F) | Humidity: {cached_humidity}% (cached)"
+
     return "Data unavailable. Retrying soon..."
 
 
