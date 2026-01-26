@@ -164,7 +164,8 @@ def temp():
 
 
         if current_time - last_dht_read < 3.0 and cached_temp is not None:
-            return f"Room Temp: {cached_temp}°C ({cached_temp * 9/5 + 32}°F) | Humidity: {cached_humidity}%"
+            temp_f = cached_temp * 9/5 + 32
+            return f"Room Temp: {cached_temp:.2f}°C ({temp_f:.2f}°F) | Humidity: {cached_humidity:.1f}%"
 
 
         max_retries = 5
@@ -176,7 +177,8 @@ def temp():
                     cached_temp = temperature
                     cached_humidity = humidity
                     last_dht_read = current_time
-                    return f"Room Temp: {temperature}°C ({temperature * 9/5 + 32}°F) | Humidity: {humidity}%"
+                    temp_f = temperature * 9/5 + 32
+                    return f"Room Temp: {temperature:.2f}°C ({temp_f:.2f}°F) | Humidity: {humidity:.1f}%"
             except (RuntimeError, OSError):
                 if attempt < max_retries - 1:
                     time.sleep(2.5)
@@ -184,12 +186,14 @@ def temp():
             except Exception as error:
 
                 if cached_temp is not None:
-                    return f"Room Temp: {cached_temp}°C ({cached_temp * 9/5 + 32}°F) | Humidity: {cached_humidity}% (cached)"
+                    temp_f = cached_temp * 9/5 + 32
+                    return f"Room Temp: {cached_temp:.2f}°C ({temp_f:.2f}°F) | Humidity: {cached_humidity:.1f}% (cached)"
                 return f"Error: {str(error)}"
 
 
         if cached_temp is not None:
-            return f"Room Temp: {cached_temp}°C ({cached_temp * 9/5 + 32}°F) | Humidity: {cached_humidity}% (cached)"
+            temp_f = cached_temp * 9/5 + 32
+            return f"Room Temp: {cached_temp:.2f}°C ({temp_f:.2f}°F) | Humidity: {cached_humidity:.1f}% (cached)"
 
     return "Data unavailable. Retrying soon..."
 
