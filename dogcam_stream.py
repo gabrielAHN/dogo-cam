@@ -69,10 +69,42 @@ def is_shutdown_pending():
 camera.configure(camera.create_video_configuration(main={"size": (640, 480)}))
 camera.start_recording(JpegEncoder(), FileOutput(output))
 
+camera_running = True
+camera_lock = threading.Lock()
+
+
+def check_shutdown_and_stop_camera():
+    """Monitor for shutdown signal and stop camera before shutdown"""
+    global camera_running
+    while True:
+        if is_shutdown_pending():
+            with camera_lock:
+                if camera_running:
+                    logger.info("Shutdown pending - stopping camera...")
+                    try:
+                        camera.stop_recording()
+                        camera_running = False
+                        logger.info("Camera stopped successfully")
+                    except Exception as e:
+                        logger.error(f"Error stopping camera: {e}")
+            break
+        time.sleep(0.5)
+
 
 def cleanup():
-    camera.stop_recording()
+    global camera_running
+    with camera_lock:
+        if camera_running:
+            try:
+                camera.stop_recording()
+                camera_running = False
+            except:
+                pass
 
+
+# Start shutdown monitor thread
+shutdown_monitor = threading.Thread(target=check_shutdown_and_stop_camera, daemon=True)
+shutdown_monitor.start()
 
 atexit.register(cleanup)
 
