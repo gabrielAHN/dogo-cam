@@ -31,34 +31,33 @@ Dependencies are managed with UV via a `pyproject.toml` file. The app runs on bo
 |------------|---------------------------|----------|-------|
 | VCC | Pin 1 | 3.3V Power | Supplies power to the sensor. Although the manufacturer's tutorial suggests connecting to 5V (Pi Pin 2 or 4), using 3.3V is safer and recommended to prevent potential voltage mismatch that could damage the Pi's GPIO pins. The sensor operates fine at 3.3V. |
 | Data | Pin 7 | GPIO4 | The data signal pin. GPIO4 is commonly used in tutorials, but you can choose any available GPIO pin and adjust your code accordingly. |
-| GND | Pin 6 (or Pin 9) | Ground | Completes the circuit. Pin 6 is adjacent for easier wiring without crossing wires much. |
+| GND | Pin 9 | Ground | Completes the circuit. Using Pin 9 to avoid conflicts with other components. |
 
 - Add a 4.7kΩ-10kΩ pull-up resistor between VCC and Data pins for signal stability.
 - Test: After software setup, run a simple script to verify readings (see Software Installation).
 
-### 3. Connect the KY-004 Button Module (Optional - Stream On/Off Control)
-- **OPTIONAL**: Only connect this if you want physical button control to save power
+### 3. Connect the Power Button (Optional - Hardware Shutdown/Wake)
+- **OPTIONAL**: Add a physical button for safe shutdown and wake-up control
 - **Product Used**: [Youliang KY-004 3-Pin Button Key Tactile Switch Sensor](https://www.amazon.co.jp/dp/B07TBKTGR3)
 - **Reference**: [KY-004 Key Switch Module Documentation](https://arduinomodules.info/ky-004-key-switch-module/)
+- **Why GPIO3?**: GPIO3 (Pin 5) is the only GPIO pin with hardware wake-up capability on Raspberry Pi
 - Wiring (power off Pi before connecting):
 
 | KY-004 Pin | Raspberry Pi Physical Pin | Function | Notes |
 |------------|---------------------------|----------|-------|
-| S (Signal) | Pin 11 | GPIO17 | Signal pin that goes HIGH when button is pressed |
-| Middle (VCC) | Pin 17 | 3.3V Power | Powers the button module |
-| - (GND) | Pin 14 | Ground | Completes the circuit |
+| S (Signal/Left) | Pin 5 | GPIO3 | Signal pin - GPIO3 has special wake-up capability. Outputs HIGH when NOT pressed, LOW when pressed (inverted logic) |
+| Middle (VCC) | Pin 2 | 5V Power | Powers the button module (requires 5V, not 3.3V!) |
+| - (GND/Right) | Pin 6 | Ground | Completes the circuit |
 
 - **How It Works**:
-  - Set `USE_BUTTON=true` in `.env` to enable button control
-  - If button hardware is connected: Stream starts OFF (saves power) - press button to turn ON/OFF
-  - If button hardware NOT connected: Automatically falls back to always-on stream mode
-  - When disabled (`USE_BUTTON=false`), stream is always ON (no button needed)
-  - **Smart Fallback**: Even with `USE_BUTTON=true`, if the button isn't plugged in, the app will detect this and run the stream continuously
+  - **When Pi is ON**: Press button to initiate safe shutdown (`sudo shutdown -h now`)
+  - **When Pi is OFF**: Press button to power on the Pi (GPIO3 hardware wake feature)
+  - No software configuration needed - works automatically with the systemd service
 - **Specifications**:
   - Operating voltage: 3.3V-5V
   - Tactile button rated for 100,000 cycles
   - Built-in 10kΩ resistor
-- Test: After software setup, pressing the button should toggle the stream on/off.
+- **Software Setup**: See "Power Button Service" section below
 
 ## Software Installation
 
@@ -88,7 +87,7 @@ Dependencies are managed with UV via a `pyproject.toml` file. The app runs on bo
   BASIC_AUTH_PASSWORD=your_password
   MAX_VIEWERS=3
   PORT=5000
-  USE_BUTTON=true  # Set to 'true' to enable button control (stream starts OFF), 'false' for always-on stream
+  DOG_NAME=Dog  # Optional: customize the name shown in the web interface
   ```
 
 ### 4. Manage Dependencies with `pyproject.toml`
@@ -108,7 +107,6 @@ Dependencies are managed with UV via a `pyproject.toml` file. The app runs on bo
       "adafruit-circuitpython-dht",
       "adafruit-blinka",
       "gunicorn",  # For production server
-      "RPi.GPIO",  # For button control
   ]
   ```
 - Sync dependencies (creates/manages venv):
@@ -150,6 +148,77 @@ Dependencies are managed with UV via a `pyproject.toml` file. The app runs on bo
   sudo systemctl enable --now dog-stream.service
   ```
 - Check: `sudo systemctl status dog-stream.service`—should be active.
+
+### 2. Power Button Service (Optional)
+If you connected the KY-004 power button to GPIO3 (Pin 5):
+
+- Create the button script `/home/your-user/ky004-control.py`:
+  ```python
+  #!/usr/bin/env python3
+  import lgpio
+  import time
+  import os
+
+  BUTTON_PIN = 3
+  DEBOUNCE_TIME = 0.1
+  SHUTDOWN_STATE_FILE = "/tmp/shutdown_pending"
+
+  def main():
+      if os.path.exists(SHUTDOWN_STATE_FILE):
+          os.remove(SHUTDOWN_STATE_FILE)
+
+      h = lgpio.gpiochip_open(0)
+      lgpio.gpio_claim_input(h, BUTTON_PIN, lgpio.SET_PULL_UP)
+
+      print(f"Power button monitoring on GPIO{BUTTON_PIN}")
+
+      try:
+          while True:
+              if lgpio.gpio_read(h, BUTTON_PIN) == 0:
+                  time.sleep(DEBOUNCE_TIME)
+                  if lgpio.gpio_read(h, BUTTON_PIN) == 0:
+                      with open(SHUTDOWN_STATE_FILE, 'w') as f:
+                          f.write('1')
+                      time.sleep(2)
+                      lgpio.gpiochip_close(h)
+                      os.system("sudo shutdown -h now")
+                      break
+              time.sleep(0.2)
+      except KeyboardInterrupt:
+          print("\nStopped")
+      finally:
+          lgpio.gpiochip_close(h)
+
+  if __name__ == "__main__":
+      main()
+  ```
+
+- Create systemd service `/etc/systemd/system/button-control.service`:
+  ```
+  [Unit]
+  Description=KY-004 Button Control (Stream Toggle & Shutdown)
+  After=multi-user.target
+
+  [Service]
+  Type=simple
+  User=your-user
+  WorkingDirectory=/home/your-user
+  ExecStart=/usr/bin/python3 /home/your-user/ky004-control.py
+  Restart=always
+  RestartSec=10
+
+  [Install]
+  WantedBy=multi-user.target
+  ```
+
+- Enable the service:
+  ```
+  sudo systemctl daemon-reload
+  sudo systemctl enable --now button-control.service
+  ```
+
+- Test: Press the button - Pi should show "⚠️ Shutting Down..." in web interface, then shutdown safely
+- Wake: Press button again while Pi is off to power it back on (GPIO3 hardware feature)
 
 ## Optional: Cloudflare Tunnel Setup for Remote Access
 Expose the local app securely to your domain (e.g., `your-domain.com`) without port forwarding. Cloudflare handles HTTPS and DNS (delegate nameservers from your hosted zone provider like AWS Route 53).
@@ -195,31 +264,31 @@ Expose the local app securely to your domain (e.g., `your-domain.com`) without p
 - Enable: `sudo systemctl enable --now cloudflared.service`
 - Check: `sudo systemctl status cloudflared.service`
 
-## Using the Button to Control the Stream
+## Using the Power Button
 
-The KY-004 button provides physical on/off control for the camera stream:
+The KY-004 button on GPIO3 (Pin 5) provides hardware power control:
 
-1. **Toggle Stream**: Press the button to toggle between streaming ON and OFF states
-2. **Visual Feedback**: The web interface shows the current stream status:
-   - 🟢 Stream Active - Camera is streaming
-   - 🔴 Stream Paused - Camera is paused (button pressed to disable)
-3. **Status Updates**: The status indicator updates every 2 seconds via HTMX
-4. **Default State**: Stream starts enabled when the service boots
+1. **Shutdown**: Press the button once
+   - Web interface shows "⚠️ Shutting Down..." for 2 seconds
+   - Pi safely shuts down
+2. **Wake Up**: Press the button again while Pi is off
+   - Pi powers back on (GPIO3 hardware wake feature)
+   - All services start automatically on boot
 
 ### Testing the Button
 
 After completing the hardware and software setup:
 
-1. Start the service: `sudo systemctl start dog-stream.service`
-2. Access the web interface: `http://your-pi-ip:5000`
-3. Observe the stream status indicator in the top-left corner
-4. Press the physical button - the status should change and the stream should pause/resume
-5. Check logs for confirmation: `journalctl -u dog-stream.service -f`
-   - You should see messages like "Stream enabled" or "Stream disabled"
+1. Access the web interface: `http://your-pi-ip:5000`
+2. Observe the stream status indicator in the top-left corner
+3. Press the physical button - you should see "⚠️ Shutting Down..." then the Pi shuts down
+4. Press the button again - Pi powers back on
+5. Check logs: `journalctl -u button-control.service -f`
+   - You should see "Button pressed - Setting shutdown state..." before shutdown
 
 ## Troubleshooting
 - Camera not starting: Ensure enabled in `raspi-config`; test with `libcamera-hello`.
 - Sensor errors: Verify pull-up resistor; retry logic in code handles checksum issues.
-- Access issues: Check auth creds in `.env`; monitor logs with `journalctl -u dog-stream.service`.
+- Access issues: Check auth creds in `.env`; monitor logs with `journalctl -u dog-stream-flask.service`.
 - Performance: On RPi 3, lower video resolution if CPU/RAM high (edit code: `{"size": (320, 240)}`).
-- Button not working: Check GPIO connections; verify RPi.GPIO is installed; check logs for GPIO errors.
+- Button not working: Check wiring (S→Pin 5, Middle→Pin 2, GND→Pin 6); verify lgpio is available; check logs with `journalctl -u button-control.service -f`.

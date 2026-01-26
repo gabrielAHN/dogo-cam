@@ -3,15 +3,18 @@ import os
 import time
 import threading
 import atexit
+import logging
 import board
 import adafruit_dht
-import RPi.GPIO as GPIO
 from dotenv import load_dotenv
 from flask import Flask, Response, render_template, request
 from flask_httpauth import HTTPBasicAuth
 from picamera2 import Picamera2
 from picamera2.encoders import JpegEncoder
 from picamera2.outputs import FileOutput
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
@@ -26,11 +29,9 @@ last_dht_read = 0
 cached_temp = None
 cached_humidity = None
 
-BUTTON_PIN = 17
-USE_BUTTON = os.getenv('USE_BUTTON', 'false').lower() == 'true'
-stream_enabled = not USE_BUTTON
+STREAM_STATE_FILE = '/tmp/stream_enabled'
+SHUTDOWN_STATE_FILE = '/tmp/shutdown_pending'
 stream_lock = threading.Lock()
-gpio_initialized = False
 
 
 class StreamingOutput(io.BufferedIOBase):
@@ -47,36 +48,30 @@ class StreamingOutput(io.BufferedIOBase):
 output = StreamingOutput()
 
 
+def get_stream_state():
+    """Read current stream state from file (managed by button daemon)"""
+    try:
+        with open(STREAM_STATE_FILE, 'r') as f:
+            return f.read().strip() == '1'
+    except:
+        return True  # Default to enabled if file doesn't exist
+
+
+def is_shutdown_pending():
+    """Check if shutdown is pending"""
+    try:
+        with open(SHUTDOWN_STATE_FILE, 'r') as f:
+            return f.read().strip() == '1'
+    except:
+        return False
+
+
 camera.configure(camera.create_video_configuration(main={"size": (640, 480)}))
 camera.start_recording(JpegEncoder(), FileOutput(output))
 
 
-def button_callback(channel):
-    global stream_enabled
-    time.sleep(0.05)
-    if GPIO.input(BUTTON_PIN) == GPIO.HIGH:
-        with stream_lock:
-            stream_enabled = not stream_enabled
-
-
-def initialize_gpio():
-    global gpio_initialized, stream_enabled, USE_BUTTON
-    if USE_BUTTON and not gpio_initialized:
-        try:
-            GPIO.setmode(GPIO.BCM)
-            GPIO.setup(BUTTON_PIN, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
-            test_read = GPIO.input(BUTTON_PIN)
-            GPIO.add_event_detect(BUTTON_PIN, GPIO.RISING, callback=button_callback, bouncetime=300)
-            gpio_initialized = True
-        except Exception:
-            USE_BUTTON = False
-            stream_enabled = True
-
-
 def cleanup():
     camera.stop_recording()
-    if USE_BUTTON:
-        GPIO.cleanup()
 
 
 atexit.register(cleanup)
@@ -96,11 +91,6 @@ def gen():
                b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
 
 
-@app.before_request
-def before_first_request():
-    initialize_gpio()
-
-
 @app.route('/')
 @auth.login_required
 def index():
@@ -111,9 +101,8 @@ def index():
 @app.route('/video_feed')
 @auth.login_required
 def video_feed():
-    with stream_lock:
-        if not stream_enabled:
-            return "Stream is currently disabled. Press the button to enable.", 503
+    if not get_stream_state():
+        return "Stream is currently disabled. Press the button to enable.", 503
 
     if not viewer_semaphore.acquire(blocking=False):
         return "Max viewers reached. Try again later.", 503
@@ -176,6 +165,7 @@ def temp():
 @app.route('/stream_status')
 @auth.login_required
 def stream_status():
-    with stream_lock:
-        status = "🟢 Stream Active" if stream_enabled else "🔴 Stream Paused"
-        return status
+    if is_shutdown_pending():
+        return "⚠️ Shutting Down..."
+    status = "🟢 Stream Active" if get_stream_state() else "🔴 Stream Paused"
+    return status
