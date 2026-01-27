@@ -1,0 +1,14 @@
+[Unit]
+Description=KY-004 Button Control (Start Service & Shutdown)
+After=multi-user.target
+
+[Service]
+Type=simple
+User=your-user
+WorkingDirectory=/home/your-user
+ExecStart=/usr/bin/python3 /home/your-user/ky004-control.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

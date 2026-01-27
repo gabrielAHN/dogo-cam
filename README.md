@@ -149,8 +149,11 @@ Dependencies are managed with UV via a `pyproject.toml` file. The app runs on bo
   ```
 - Check: `sudo systemctl status dog-stream.service`—should be active.
 
-### 2. Power Button Service (Optional)
+### 2. Power Button Service (Required for Sleep-by-Default Mode)
 If you connected the KY-004 power button to GPIO3 (Pin 5):
+
+**New Behavior**: The Pi now sleeps by default. Press button to wake and start services, press again to shutdown.
+See [BUTTON_BEHAVIOR.md](BUTTON_BEHAVIOR.md) for detailed documentation.
 
 - Create the button script `/home/your-user/ky004-control.py`:
   ```python
@@ -211,14 +214,24 @@ If you connected the KY-004 power button to GPIO3 (Pin 5):
   WantedBy=multi-user.target
   ```
 
-- Enable the service:
-  ```
-  sudo systemctl daemon-reload
-  sudo systemctl enable --now button-control.service
+- **Quick Deploy Method**: Use the deployment script to install everything:
+  ```bash
+  ./deploy_button_changes.sh
   ```
 
-- Test: Press the button - Pi should show "⚠️ Shutting Down..." in web interface, then shutdown safely
-- Wake: Press button again while Pi is off to power it back on (GPIO3 hardware feature)
+- **Manual Install**: Or install manually:
+  ```
+  sudo systemctl daemon-reload
+  sudo systemctl enable button-control.service
+  sudo systemctl disable dog-stream.service  # Prevent auto-start
+  sudo systemctl start button-control.service
+  ```
+
+- **Test the new behavior**:
+  1. Press button once → dog-stream service starts (camera begins streaming)
+  2. Press button again → Pi shuts down safely
+  3. While off, press button → Pi wakes up (GPIO3 hardware feature)
+  4. Check logs: `sudo journalctl -u button-control.service -f`
 
 ## Optional: Cloudflare Tunnel Setup for Remote Access
 Expose the local app securely to your domain (e.g., `your-domain.com`) without port forwarding. Cloudflare handles HTTPS and DNS (delegate nameservers from your hosted zone provider like AWS Route 53).
