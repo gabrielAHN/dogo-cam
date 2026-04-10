@@ -5,8 +5,8 @@ After=multi-user.target
 [Service]
 Type=simple
 User=your-user
-WorkingDirectory=/home/your-user
-ExecStart=/usr/bin/python3 /home/your-user/ky004-control.py
+WorkingDirectory=/home/your-user/dogo-cam
+ExecStart=/usr/bin/python3 /home/your-user/dogo-cam/ky004-control.py
 Restart=always
 RestartSec=10
 

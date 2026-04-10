@@ -1,7 +1,7 @@
 [project]
-name = "dog-kotaro-cam"
+name = "dogo-cam"
 version = "0.1.0"
-description = "Add your description here"
+description = "Manual Raspberry Pi camera stream with pan and tilt servo controls"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
