@@ -59,6 +59,8 @@
             font-family: 'Roboto', sans-serif;
         }
 
+        /* Servo status CSS removed */
+
         #stream-status {
             color: #fff;
             position: absolute;
@@ -98,6 +100,233 @@
             transform: scale(0.95);
         }
 
+        /* Settings Button */
+        #settings-btn {
+            position: absolute;
+            top: 20px;
+            right: 90px;
+            z-index: 11;
+            background-color: rgba(0, 0, 0, 0.6);
+            color: #fff;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-radius: 8px;
+            padding: 12px 16px;
+            font-size: 24px;
+            cursor: pointer;
+            font-family: 'Roboto', sans-serif;
+            transition: all 0.3s ease;
+            -webkit-tap-highlight-color: transparent;
+            display: {% if servo_available %}block{% else %}none{% endif %};
+        }
+
+        #settings-btn:hover {
+            background-color: rgba(0, 0, 0, 0.8);
+            border-color: rgba(255, 255, 255, 0.6);
+        }
+
+        #settings-btn:active {
+            transform: scale(0.95);
+        }
+
+        /* Settings Modal */
+        #servo-controls-modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.85);
+            z-index: 100;
+            align-items: center;
+            justify-content: center;
+            overflow-y: auto;
+        }
+
+        #servo-controls-modal.active {
+            display: flex;
+        }
+
+        #servo-controls {
+            background-color: rgba(20, 20, 20, 0.95);
+            border-radius: 16px;
+            padding: 25px;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            max-height: 90vh;
+            overflow-y: auto;
+            max-width: 400px;
+            width: 90%;
+        }
+
+        .modal-header {
+            color: #fff;
+            font-family: 'Roboto', sans-serif;
+            font-size: 22px;
+            text-align: center;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+
+        .close-modal {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            color: #fff;
+            font-size: 36px;
+            cursor: pointer;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .servo-panel {
+            background-color: rgba(0, 0, 0, 0.7);
+            border-radius: 12px;
+            padding: 15px;
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .servo-panel.visible {
+            display: flex;
+        }
+
+        .controls-hint {
+            background-color: rgba(76, 175, 80, 0.2);
+            border: 1px solid rgba(76, 175, 80, 0.5);
+            border-radius: 8px;
+            padding: 12px;
+            color: #fff;
+            font-size: 13px;
+            text-align: center;
+            margin-top: 10px;
+        }
+
+        .keyboard-hint {
+            font-family: monospace;
+            background-color: rgba(0, 0, 0, 0.5);
+            padding: 2px 6px;
+            border-radius: 3px;
+            margin: 0 2px;
+        }
+
+        .servo-label {
+            width: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            color: #fff;
+            font-family: 'Roboto', sans-serif;
+            font-size: 13px;
+            opacity: 0.8;
+            margin-bottom: 6px;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+        }
+
+        .servo-value {
+            color: #4CAF50;
+            font-family: 'Roboto', monospace;
+            font-size: 17px;
+            font-weight: bold;
+            opacity: 1;
+        }
+
+        .servo-buttons {
+            display: grid;
+            gap: 8px;
+        }
+
+        .tilt-buttons {
+            grid-template-columns: 60px;
+            grid-template-rows: repeat(2, 60px);
+        }
+
+        .pan-buttons {
+            grid-template-columns: repeat(2, 60px);
+            grid-template-rows: 60px;
+        }
+
+        .servo-btn {
+            background-color: rgba(255, 255, 255, 0.15);
+            color: #fff;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-radius: 8px;
+            font-size: 28px;
+            cursor: pointer;
+            font-family: 'Roboto', sans-serif;
+            transition: all 0.2s ease;
+            -webkit-tap-highlight-color: transparent;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            touch-action: manipulation;
+            user-select: none;
+            padding: 0;
+        }
+
+        .servo-btn:active:not(:disabled) {
+            transform: scale(0.9);
+            background-color: rgba(255, 255, 255, 0.3);
+        }
+
+        .servo-btn:disabled {
+            opacity: 0.3;
+            cursor: not-allowed;
+            border-color: rgba(255, 255, 255, 0.1);
+        }
+
+        .reset-btn {
+            background-color: rgba(255, 165, 0, 0.2);
+            color: #fff;
+            border: 2px solid rgba(255, 165, 0, 0.5);
+            border-radius: 8px;
+            font-size: 15px;
+            cursor: pointer;
+            font-family: 'Roboto', sans-serif;
+            transition: all 0.2s ease;
+            -webkit-tap-highlight-color: transparent;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            touch-action: manipulation;
+            user-select: none;
+            padding: 12px 16px;
+            width: 100%;
+            font-weight: bold;
+        }
+
+        .reset-btn:active {
+            transform: scale(0.95);
+            background-color: rgba(255, 165, 0, 0.4);
+            border-color: rgba(255, 165, 0, 0.8);
+        }
+
+        .camera-unavailable {
+            color: #fff;
+            font-family: 'Roboto', sans-serif;
+            text-align: center;
+            font-size: 24px;
+            background-color: rgba(255, 0, 0, 0.3);
+            padding: 40px;
+            border-radius: 12px;
+            border: 2px solid rgba(255, 0, 0, 0.6);
+            max-width: 500px;
+        }
+
+        .camera-unavailable h2 {
+            font-size: 48px;
+            margin: 0 0 20px 0;
+        }
+
+        .camera-unavailable p {
+            margin: 10px 0;
+            font-size: 18px;
+        }
+
         body:fullscreen #fullscreen-btn,
         body:-webkit-full-screen #fullscreen-btn,
         body:-moz-full-screen #fullscreen-btn,
@@ -111,6 +340,7 @@
         body:-ms-fullscreen #fullscreen-btn:hover {
             opacity: 1;
         }
+
         body.mobile-fullscreen {
             position: fixed;
             top: 0;
@@ -123,7 +353,8 @@
 
         body.mobile-fullscreen h1,
         body.mobile-fullscreen #temp,
-        body.mobile-fullscreen #stream-status {
+        body.mobile-fullscreen #stream-status,
+        body.mobile-fullscreen #servo-controls {
             opacity: 0;
             pointer-events: none;
             transition: opacity 0.3s;
@@ -136,6 +367,28 @@
         body.mobile-fullscreen #fullscreen-btn:active {
             opacity: 1;
         }
+
+        /* Mobile responsive adjustments */
+        @media (max-width: 768px) {
+            #servo-controls {
+                bottom: 60px;
+                right: 10px;
+            }
+
+            .servo-btn {
+                font-size: 20px;
+            }
+
+            .tilt-buttons {
+                grid-template-columns: 50px;
+                grid-template-rows: repeat(2, 50px);
+            }
+
+            .pan-buttons {
+                grid-template-columns: repeat(2, 50px);
+                grid-template-rows: 50px;
+            }
+        }
     </style>
 </head>
 
@@ -145,15 +398,64 @@
         <div id="stream-status" hx-get="/stream_status" hx-trigger="load, every 2s" hx-swap="innerHTML">
             Checking status...
         </div>
+        <!-- Settings Button -->
+        <button id="settings-btn" title="Camera Settings" onclick="toggleServoModal()">⚙</button>
+
         <button id="fullscreen-btn" title="Toggle Fullscreen">⛶</button>
+
+        <!-- Settings Modal -->
+        {% if servo_available %}
+        <div id="servo-controls-modal">
+            <span class="close-modal" onclick="toggleServoModal()">×</span>
+            <div id="servo-controls">
+                <div class="modal-header">⚙ Camera Controls</div>
+                <!-- Manual Control Panel -->
+                <div id="panel-manual" class="servo-panel visible">
+                    <div class="servo-label"><span>Tilt</span><span class="servo-value" id="servo1-angle">--</span></div>
+                    <div class="servo-buttons tilt-buttons">
+                        <button id="btn-up" class="servo-btn">▲</button>
+                        <button id="btn-down" class="servo-btn">▼</button>
+                    </div>
+
+                    <div class="servo-label" style="margin-top: 15px;"><span>Pan</span><span class="servo-value" id="servo2-angle">--</span></div>
+                    <div class="servo-buttons pan-buttons">
+                        <button id="btn-left" class="servo-btn">◀</button>
+                        <button id="btn-right" class="servo-btn">▶</button>
+                    </div>
+
+                    <button id="btn-reset" class="reset-btn" onclick="resetServos()" style="margin-top: 15px;">🏠 Home</button>
+
+                    <div class="controls-hint">
+                        <div><strong>Keyboard:</strong> <span class="keyboard-hint">↑↓←→</span> or <span class="keyboard-hint">WASD</span></div>
+                        <div style="margin-top: 5px;"><strong>Touch:</strong> Drag on screen</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+
+        {% if camera_available %}
         <img src="{{ url_for('video_feed') }}" alt="Live Dog Cam">
+        {% else %}
+        <div class="camera-unavailable">
+            <h2>📷</h2>
+            <p><strong>Camera Not Available</strong></p>
+            <p>Please check camera connection</p>
+            <p style="font-size: 14px; margin-top: 20px; opacity: 0.7;">Temperature sensor still available below</p>
+        </div>
+        {% endif %}
+
+        <!-- Servo Status Display - Removed -->
+
         <div id="temp" hx-get="/temp" hx-trigger="load, every 10s" hx-swap="innerHTML">
             Loading temperature...
         </div>
     </div>
 
     <script>
+        console.log('=== SCRIPT STARTED ===');
         const fullscreenBtn = document.getElementById('fullscreen-btn');
+        console.log('Fullscreen button:', fullscreenBtn);
         const container = document.body;
         const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
         let mobileFullscreen = false;
@@ -227,6 +529,339 @@
         function updateFullscreenButton() {
             fullscreenBtn.textContent = isFullscreen() ? '✕' : '⛶';
         }
+
+        let currentMode = 'manual';
+
+        function setManualPanel() {
+            const panel = document.getElementById('panel-manual');
+            if (panel) {
+                panel.classList.add('visible');
+            }
+        }
+
+        function toggleServoModal() {
+            console.log('toggleServoModal called');
+            const modal = document.getElementById('servo-controls-modal');
+            if (!modal) {
+                console.error('Modal not found!');
+                return;
+            }
+
+            modal.classList.toggle('active');
+            setManualPanel();
+        }
+
+        // Close modal when clicking outside the controls
+        document.addEventListener('click', function(event) {
+            const modal = document.getElementById('servo-controls-modal');
+            if (!modal) return; // Modal doesn't exist if servo not available
+
+            const controls = document.getElementById('servo-controls');
+            const settingsBtn = document.getElementById('settings-btn');
+
+            if (modal.classList.contains('active') &&
+                !controls.contains(event.target) &&
+                !settingsBtn.contains(event.target) &&
+                event.target.className !== 'close-modal') {
+                toggleServoModal();
+            }
+        });
+
+        {% if servo_available %}
+
+        let lastMoveTime = 0;
+        const MOVE_THROTTLE_MS = 150;
+
+        async function moveServo(axis, direction) {
+            const now = Date.now();
+            if (now - lastMoveTime < MOVE_THROTTLE_MS) return;
+            lastMoveTime = now;
+
+            try {
+                const response = await fetch('/servo/move', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ axis, direction })
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    updateButtonStates(data);
+                } else {
+                    console.error('Move failed:', response.status);
+                }
+            } catch (error) {
+                console.error('Error moving servo:', error);
+            }
+        }
+
+        let holdInterval = null;
+
+        function startHold(axis, direction) {
+            if (holdInterval) stopHold();
+            moveServo(axis, direction);
+            holdInterval = setInterval(() => {
+                moveServo(axis, direction);
+            }, MOVE_THROTTLE_MS);
+        }
+
+        function stopHold() {
+            if (holdInterval) {
+                clearInterval(holdInterval);
+                holdInterval = null;
+            }
+        }
+
+        function setupServoButtons() {
+            const buttons = [
+                { id: 'btn-up', axis: 'servo1', direction: 'up' },
+                { id: 'btn-down', axis: 'servo1', direction: 'down' },
+                { id: 'btn-left', axis: 'servo2', direction: 'left' },
+                { id: 'btn-right', axis: 'servo2', direction: 'right' }
+            ];
+
+            buttons.forEach(({ id, axis, direction }) => {
+                const btn = document.getElementById(id);
+                if (!btn) return;
+
+                // Mouse/Touch hold-to-move handlers
+                btn.addEventListener('mousedown', (e) => {
+                    e.preventDefault();
+                    if (!btn.disabled) {
+                        startHold(axis, direction);
+                    }
+                });
+
+                btn.addEventListener('mouseup', (e) => {
+                    e.preventDefault();
+                    stopHold();
+                });
+
+                btn.addEventListener('mouseleave', (e) => {
+                    stopHold();
+                });
+
+                // Touch hold-to-move handlers
+                btn.addEventListener('touchstart', (e) => {
+                    e.preventDefault();
+                    if (!btn.disabled) {
+                        startHold(axis, direction);
+                    }
+                });
+
+                btn.addEventListener('touchend', (e) => {
+                    e.preventDefault();
+                    stopHold();
+                });
+
+                btn.addEventListener('touchcancel', (e) => {
+                    stopHold();
+                });
+            });
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            setManualPanel();
+            setupServoButtons();
+            loadServoState();
+        });
+
+        // Keyboard Controls (Arrow keys and WASD) - Hold to move
+        let keyboardEnabled = false;
+        let pressedKeys = new Set();
+
+        function handleKeyDown(e) {
+            if (!keyboardEnabled || currentMode !== 'manual') return;
+            if (document.activeElement.tagName === 'INPUT') return; // Don't interfere with inputs
+
+            const key = e.key.toLowerCase();
+
+            // Ignore if already holding this key (prevents key repeat)
+            if (pressedKeys.has(key)) return;
+
+            let axis, direction;
+
+            switch(key) {
+                // Arrow keys
+                case 'arrowup':
+                case 'w':
+                    axis = 'servo1';
+                    direction = 'up';
+                    break;
+                case 'arrowdown':
+                case 's':
+                    axis = 'servo1';
+                    direction = 'down';
+                    break;
+                case 'arrowleft':
+                case 'a':
+                    axis = 'servo2';
+                    direction = 'left';
+                    break;
+                case 'arrowright':
+                case 'd':
+                    axis = 'servo2';
+                    direction = 'right';
+                    break;
+                default:
+                    return;
+            }
+
+            e.preventDefault();
+            pressedKeys.add(key);
+            startHold(axis, direction);
+        }
+
+        function handleKeyUp(e) {
+            const key = e.key.toLowerCase();
+            if (pressedKeys.has(key)) {
+                pressedKeys.delete(key);
+                stopHold();
+            }
+        }
+
+        document.addEventListener('keydown', handleKeyDown);
+        document.addEventListener('keyup', handleKeyUp);
+
+        // Stop movement when window loses focus
+        window.addEventListener('blur', () => {
+            pressedKeys.clear();
+            stopHold();
+        });
+
+        keyboardEnabled = true;
+
+        let touchLastX = 0;
+        let touchLastY = 0;
+        const touchMoveThreshold = 28;
+
+        document.addEventListener('touchstart', (e) => {
+            if (currentMode !== 'manual' || e.touches.length !== 1) return;
+            touchLastX = e.touches[0].clientX;
+            touchLastY = e.touches[0].clientY;
+        }, { passive: true });
+
+        document.addEventListener('touchmove', (e) => {
+            if (currentMode !== 'manual' || e.touches.length !== 1) return;
+
+            const touchX = e.touches[0].clientX;
+            const touchY = e.touches[0].clientY;
+            const deltaX = touchX - touchLastX;
+            const deltaY = touchY - touchLastY;
+
+            if (Math.abs(deltaX) < touchMoveThreshold && Math.abs(deltaY) < touchMoveThreshold) {
+                return;
+            }
+
+            e.preventDefault();
+
+            if (Math.abs(deltaY) >= Math.abs(deltaX)) {
+                moveServo('servo1', deltaY > 0 ? 'down' : 'up');
+            } else {
+                moveServo('servo2', deltaX > 0 ? 'right' : 'left');
+            }
+
+            touchLastX = touchX;
+            touchLastY = touchY;
+        }, { passive: false });
+
+        document.addEventListener('touchend', () => {
+            touchLastX = 0;
+            touchLastY = 0;
+        }, { passive: true });
+
+        async function resetServos() {
+            const btn = document.getElementById('btn-reset');
+
+            try {
+                btn.disabled = true;
+                btn.style.opacity = '0.5';
+                btn.textContent = '⏳ Resetting';
+
+                const response = await fetch('/servo/reset', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    updateButtonStates(data);
+                    console.log('Reset complete:', data);
+                } else {
+                    console.error('Reset failed:', response.status);
+                }
+            } catch (error) {
+                console.error('Error resetting servos:', error);
+            } finally {
+                btn.disabled = false;
+                btn.style.opacity = '1';
+                btn.textContent = '🏠 Home';
+
+            }
+        }
+
+        function formatServoValue(value) {
+            const rounded = Math.round(Number(value) * 10) / 10;
+            return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
+        }
+
+        function updateButtonStates(data) {
+            if (data.can_servo1_up !== undefined) {
+                document.getElementById('btn-up').disabled = !data.can_servo1_up;
+            }
+            if (data.can_servo1_down !== undefined) {
+                document.getElementById('btn-down').disabled = !data.can_servo1_down;
+            }
+
+            if (data.can_servo2_left !== undefined) {
+                document.getElementById('btn-left').disabled = !data.can_servo2_left;
+            }
+            if (data.can_servo2_right !== undefined) {
+                document.getElementById('btn-right').disabled = !data.can_servo2_right;
+            }
+
+            if (data.servo1 !== undefined) {
+                const modalDisplay = document.getElementById('servo1-angle');
+                if (modalDisplay) {
+                    modalDisplay.textContent = formatServoValue(data.servo1);
+                }
+            }
+
+            if (data.servo2 !== undefined) {
+                const modalDisplay = document.getElementById('servo2-angle');
+                if (modalDisplay) {
+                    modalDisplay.textContent = formatServoValue(data.servo2);
+                }
+            }
+        }
+
+        // Load initial servo state and update displays
+        async function loadServoState() {
+            console.log('=== loadServoState called ===');
+            try {
+                const response = await fetch('/servo/position');
+                console.log('Servo position response:', response.status);
+                if (response.ok) {
+                    const data = await response.json();
+                    console.log('Servo position data:', data);
+
+                    // Servo displays removed
+
+                    // Update button states
+                    updateButtonStates(data);
+                } else {
+                    console.error('Failed to fetch servo position:', response.status);
+                }
+            } catch (error) {
+                console.error('Error loading servo state:', error);
+            }
+        }
+
+        // Auto-refresh servo positions every 2 seconds to detect manual movements
+        console.log('=== Setting up auto-refresh interval ===');
+        setInterval(loadServoState, 2000);
+        {% endif %}
+
     </script>
 </body>
 

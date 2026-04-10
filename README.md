@@ -1,307 +1,206 @@
-# Dogo Cam Project 🐶
+# Dogo Cam
 
-This project sets up a Raspberry Pi 3 to stream live video from a camera module (e.g., for monitoring a pet like a dog) and display environmental temperature/humidity data from a sensor.
+Manual Raspberry Pi dog camera with:
 
-![raspberry-pi-image](https://github.com/gabrielAHN/dogo-cam-project/blob/main/img/raspberry-pi-cam.png?raw=true)
+- Flask web UI
+- live Picamera2 stream
+- pan and tilt servo controls
+- keyboard and on-screen arrow controls
+- touch drag controls on mobile
+- optional DHT22 temperature and humidity readout
+- optional Cloudflare Tunnel exposure
 
-The stream is accessible via a web interface with basic authentication, limited to a maximum of 3 concurrent viewers. It uses Flask for the web app, Picamera2 for video, and Adafruit libraries for the sensor.
+Tracking has been removed. The current app is manual-only.
 
-![Dog View](https://github.com/gabrielAHN/dogo-cam-project/blob/main/img/dog-stream.png?raw=true)
+## Project Layout
 
-Dependencies are managed with UV via a `pyproject.toml` file. The app runs on boot using systemd, and optionally, you can expose it securely via Cloudflare Tunnel (also boot-enabled).
+- `dogcam_stream.py`: Flask app and camera endpoints
+- `servo_control_rpigpio.py`: MG90S pan and tilt servo control
+- `templates/index.html`: main camera UI
+- `templates/login.html`: login screen
+- `ky004-control.py`: optional GPIO button power control
+- `service_startup/`: example systemd unit files
+- `PIN_DIAGRAM.md`: wiring reference
 
-## Prerequisites
-- [Raspberry Pi 3](https://www.amazon.com/Raspberry-Pi-Model-Board-Plus/dp/B0BNJPL4MW?sr=8-1) with [Raspberry Pi OS (64-bit recommended)](https://www.raspberrypi.com/software/operating-systems/).
-- [Picamera Module V3 (or compatible) connected and enabled](https://www.amazon.com/Arducam-Raspberry-Camera-Autofocus-15-22pin/dp/B0C9PYCV9S?sr=8-1).
-- [OSOYOO DHT22 (or standard DHT22) temperature/humidity sensor](https://www.amazon.com/Gowoops-Temperature-Humidity-Measurement-Raspberry/dp/B073F472JL?sr=8-1).
-- (OPTIONAL) A domain with DNS hosted (e.g., via AWS Route 53) for remote access—use a placeholder like `your-domain.com`.
-- Basic tools: Git, Python 3.12+.
+## Hardware
 
-## Hardware Setup
+- Raspberry Pi with Raspberry Pi OS
+- CSI camera module
+- 2 MG90S servos for pan and tilt
+- GPIO toggle switch for turning the site stack on and off
+- optional DHT22 sensor on `GPIO4`
+- optional Cloudflare Tunnel
 
-### 1. Connect the Camera Module
-- Attach the Picamera V3 to the Raspberry Pi's CSI port.
-- Enable the camera: Run `sudo raspi-config`, navigate to Interface Options > Camera > Enable, then reboot.
-- Test: Run `libcamera-hello` in terminal—if you see a preview, it's working.
+See `PIN_DIAGRAM.md` for wiring.
 
-### 2. Connect the DHT22 Sensor
-- Wiring (using GPIO pins; power off Pi before connecting):
+### Raspberry Pi Wiring
 
-| Sensor Pin | Raspberry Pi Physical Pin | Function | Notes |
-|------------|---------------------------|----------|-------|
-| VCC | Pin 1 | 3.3V Power | Supplies power to the sensor. Although the manufacturer's tutorial suggests connecting to 5V (Pi Pin 2 or 4), using 3.3V is safer and recommended to prevent potential voltage mismatch that could damage the Pi's GPIO pins. The sensor operates fine at 3.3V. |
-| Data | Pin 7 | GPIO4 | The data signal pin. GPIO4 is commonly used in tutorials, but you can choose any available GPIO pin and adjust your code accordingly. |
-| GND | Pin 9 | Ground | Completes the circuit. Using Pin 9 to avoid conflicts with other components. |
+| Part | Signal Pin | Raspberry Pi Pin | Notes |
+|------|------------|------------------|-------|
+| Tilt servo | PWM signal | `GPIO18` / physical `Pin 12` | Servo 1 in the app |
+| Pan servo | PWM signal | `GPIO19` / physical `Pin 35` | Servo 2 in the app |
+| Toggle switch | Switch signal | `GPIO17` / physical `Pin 11` | Closing the switch to ground turns the site stack on |
+| Toggle switch | Ground | physical `Pin 6` or `Pin 9` | Open switch turns the site stack off |
+| DHT22 data | Data | `GPIO4` / physical `Pin 7` | Optional sensor |
 
-- Add a 4.7kΩ-10kΩ pull-up resistor between VCC and Data pins for signal stability.
-- Test: After software setup, run a simple script to verify readings (see Software Installation).
+### Servo Power Notes
 
-### 3. Connect the Power Button (Optional - Hardware Shutdown/Wake)
-- **OPTIONAL**: Add a physical button for safe shutdown and wake-up control
-- **Product Used**: [Youliang KY-004 3-Pin Button Key Tactile Switch Sensor](https://www.amazon.co.jp/dp/B07TBKTGR3)
-- **Reference**: [KY-004 Key Switch Module Documentation](https://arduinomodules.info/ky-004-key-switch-module/)
-- **Why GPIO3?**: GPIO3 (Pin 5) is the only GPIO pin with hardware wake-up capability on Raspberry Pi
-- Wiring (power off Pi before connecting):
+- Use a stable `5V` supply sized for both MG90S servos.
+- Share ground between the servo power supply and the Raspberry Pi.
+- The app maps `servo1` to tilt on `GPIO18` and `servo2` to pan on `GPIO19`.
+- The camera mount is inverted, so the stream is flipped in software.
 
-| KY-004 Pin | Raspberry Pi Physical Pin | Function | Notes |
-|------------|---------------------------|----------|-------|
-| S (Signal/Left) | Pin 5 | GPIO3 | Signal pin - GPIO3 has special wake-up capability. Outputs HIGH when NOT pressed, LOW when pressed (inverted logic) |
-| Middle (VCC) | Pin 2 | 5V Power | Powers the button module (requires 5V, not 3.3V!) |
-| - (GND/Right) | Pin 6 | Ground | Completes the circuit |
+### Switch Behavior
 
-- **How It Works**:
-  - **When Pi is ON**: Press button to initiate safe shutdown (`sudo shutdown -h now`)
-  - **When Pi is OFF**: Press button to power on the Pi (GPIO3 hardware wake feature)
-  - No software configuration needed - works automatically with the systemd service
-- **Specifications**:
-  - Operating voltage: 3.3V-5V
-  - Tactile button rated for 100,000 cycles
-  - Built-in 10kΩ resistor
-- **Software Setup**: See "Power Button Service" section below
+The deployed Raspberry Pi uses a simple on/off switch on `GPIO17`, monitored by `ky004-control.py`.
 
-## Software Installation
+- switch ON, `GPIO17` pulled low to ground:
+  - start `dog-stream.service`
+  - wait for the Flask app to respond
+  - start `cloudflared-tunnel.service`
+- switch OFF, `GPIO17` floating high:
+  - signal the Flask app to stop the camera cleanly
+  - stop the Cloudflare tunnel
+  - stop the Flask app
 
-### 1. Raspberry Pi APT Installs
-- Update system and install required packages for GPIO, camera, and monitoring:
-  ```
-  sudo apt update && sudo apt upgrade -y
-  sudo apt install libgpiod2 libcamera-apps-lite python3-picamera2 htop -y
-  ```
+## Manual Controls
 
-### 2. Install UV (Package Manager)
-- UV is used for faster dependency management. Install globally:
-  ```
-  curl -LsSf https://astral.sh/uv/install.sh | sh
-  ```
-- If installed via pipx, path might be `~/.local/bin/uv`—add to PATH if needed: `echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc && source ~/.bashrc`.
+- Desktop:
+  - click and hold the arrow buttons
+  - use `↑ ↓ ← →`
+  - use `W A S D`
+- Mobile:
+  - drag up and down on the screen for tilt
+  - drag left and right on the screen for pan
 
-### 3. Set Up the Project
-- Clone the project repository:
-  ```
-  git clone https://github.com/gabrielAHN/dogo-cam-project.git
-  cd dogo-cam-project
-  ```
-- Create `.env` for secrets (do not commit to Git):
-  ```
-  BASIC_AUTH_USERNAME=your_username
-  BASIC_AUTH_PASSWORD=your_password
-  MAX_VIEWERS=3
-  PORT=5000
-  DOG_NAME=Dog  # Optional: customize the name shown in the web interface
-  ```
+## Environment
 
-### 4. Manage Dependencies with `pyproject.toml`
-- Create `pyproject.toml` in the project root:
-  ```
-  [project]
-  name = "dog-cam-stream"
-  version = "0.1.0"
-  requires-python = ">=3.12"
+Create a local `.env` in the project root on the Raspberry Pi. Do not commit it.
 
-  [tool.uv]
-  dependencies = [
-      "flask",
-      "flask-httpauth",
-      "picamera2",
-      "python-dotenv",
-      "adafruit-circuitpython-dht",
-      "adafruit-blinka",
-      "gunicorn",  # For production server
-  ]
-  ```
-- Sync dependencies (creates/manages venv):
-  ```
-  uv sync
-  ```
+```env
+BASIC_AUTH_USERNAME=your_username
+BASIC_AUTH_PASSWORD=your_password
+SECRET_KEY=replace_me
+MAX_VIEWERS=3
+PORT=5000
+DOG_NAME=Kotaro
+```
 
-### 5. Application Code
-- Main file: `dogcam_stream.py` (Flask app with streaming, auth, sensor reads—code as per your setup).
-- Template: `templates/index.html` (HTMX for dynamic temp/humidity display).
-- Test locally: `uv run gunicorn --worker-class gthread --workers 1 --threads 4 --bind 0.0.0.0:5000 dogcam_stream:app`
-  - Access `http://your-pi-ip:5000` (e.g., `http://192.168.1.100:5000`), enter auth creds.
+## Raspberry Pi Setup
 
-## Setting Up on Boot (Systemd Service)
+### 1. System packages
 
-### 1. Create the Service File
-- Edit `/etc/systemd/system/dog-stream.service` (use a generic name; sudo required):
-  ```
-  [Unit]
-  Description=Dog Stream Flask App
-  After=network.target
+```bash
+sudo apt update
+sudo apt upgrade -y
+sudo apt install -y libgpiod2 libcamera-apps-lite python3-picamera2 python3-dev
+```
 
-  [Service]
-  User=your-user
-  WorkingDirectory=/home/your-user/dogo-cam-project
-  EnvironmentFile=/home/your-user/dogo-cam-project/.env
-  ExecStart=/home/your-user/.local/bin/uv run gunicorn --worker-class gthread --workers 1 --threads 4 --bind 0.0.0.0:5000 dogcam_stream:app
-  Restart=always
-  RestartSec=10
-  LimitNOFILE=4096
-  OOMScoreAdjust=-1000
+If you use the DHT22:
 
-  [Install]
-  WantedBy=multi-user.target
-  ```
-- Reload and enable:
-  ```
-  sudo systemctl daemon-reload
-  sudo systemctl enable --now dog-stream.service
-  ```
-- Check: `sudo systemctl status dog-stream.service`—should be active.
+```bash
+sudo apt install -y libgpiod-dev
+```
 
-### 2. Power Button Service (Required for Sleep-by-Default Mode)
-If you connected the KY-004 power button to GPIO3 (Pin 5):
+### 2. Clone the repo
 
-**New Behavior**: The Pi now sleeps by default. Press button to wake and start services, press again to shutdown.
-See [BUTTON_BEHAVIOR.md](BUTTON_BEHAVIOR.md) for detailed documentation.
+```bash
+git clone <your-repo-url> dogo-cam
+cd dogo-cam
+```
 
-- Create the button script `/home/your-user/ky004-control.py`:
-  ```python
-  #!/usr/bin/env python3
-  import lgpio
-  import time
-  import os
+### 3. Install `uv`
 
-  BUTTON_PIN = 3
-  DEBOUNCE_TIME = 0.1
-  SHUTDOWN_STATE_FILE = "/tmp/shutdown_pending"
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
 
-  def main():
-      if os.path.exists(SHUTDOWN_STATE_FILE):
-          os.remove(SHUTDOWN_STATE_FILE)
+Restart the shell or add `~/.local/bin` to `PATH` if needed.
 
-      h = lgpio.gpiochip_open(0)
-      lgpio.gpio_claim_input(h, BUTTON_PIN, lgpio.SET_PULL_UP)
+### 4. Install Python dependencies
 
-      print(f"Power button monitoring on GPIO{BUTTON_PIN}")
+```bash
+uv sync
+```
 
-      try:
-          while True:
-              if lgpio.gpio_read(h, BUTTON_PIN) == 0:
-                  time.sleep(DEBOUNCE_TIME)
-                  if lgpio.gpio_read(h, BUTTON_PIN) == 0:
-                      with open(SHUTDOWN_STATE_FILE, 'w') as f:
-                          f.write('1')
-                      time.sleep(2)
-                      lgpio.gpiochip_close(h)
-                      os.system("sudo shutdown -h now")
-                      break
-              time.sleep(0.2)
-      except KeyboardInterrupt:
-          print("\nStopped")
-      finally:
-          lgpio.gpiochip_close(h)
+You can also use:
 
-  if __name__ == "__main__":
-      main()
-  ```
+```bash
+uv run python -m py_compile dogcam_stream.py servo_control_rpigpio.py
+```
 
-- Create systemd service `/etc/systemd/system/button-control.service`:
-  ```
-  [Unit]
-  Description=KY-004 Button Control (Stream Toggle & Shutdown)
-  After=multi-user.target
+### 5. Run locally
 
-  [Service]
-  Type=simple
-  User=your-user
-  WorkingDirectory=/home/your-user
-  ExecStart=/usr/bin/python3 /home/your-user/ky004-control.py
-  Restart=always
-  RestartSec=10
+```bash
+uv run gunicorn --worker-class gthread --workers 1 --threads 4 --bind 0.0.0.0:5000 dogcam_stream:app
+```
 
-  [Install]
-  WantedBy=multi-user.target
-  ```
+Open `http://<pi-ip>:5000`.
 
-- **Quick Deploy Method**: Use the deployment script to install everything:
-  ```bash
-  ./deploy_button_changes.sh
-  ```
+## systemd
 
-- **Manual Install**: Or install manually:
-  ```
-  sudo systemctl daemon-reload
-  sudo systemctl enable button-control.service
-  sudo systemctl disable dog-stream.service  # Prevent auto-start
-  sudo systemctl start button-control.service
-  ```
+Example units are in `service_startup/`.
 
-- **Test the new behavior**:
-  1. Press button once → dog-stream service starts (camera begins streaming)
-  2. Press button again → Pi shuts down safely
-  3. While off, press button → Pi wakes up (GPIO3 hardware feature)
-  4. Check logs: `sudo journalctl -u button-control.service -f`
+### Flask app
 
-## Optional: Cloudflare Tunnel Setup for Remote Access
-Expose the local app securely to your domain (e.g., `your-domain.com`) without port forwarding. Cloudflare handles HTTPS and DNS (delegate nameservers from your hosted zone provider like AWS Route 53).
+Copy `service_startup/dog-stream-flask.service` to `/etc/systemd/system/dog-stream.service`, then adjust:
 
-### 1. Install Cloudflared
-- Download for ARM: `wget https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm -O cloudflared`
-- Make executable and move: `chmod +x cloudflared && sudo mv cloudflared /usr/local/bin/`
+- `User`
+- `WorkingDirectory`
+- `EnvironmentFile`
+- `ExecStart`
 
-### 2. Authenticate and Create Tunnel
-- Log in: `cloudflared tunnel login`
-- Create: `cloudflared tunnel create dog-stream-tunnel`
-- Config file (`~/.cloudflared/config.yml`):
-  ```
-  tunnel: dog-stream-tunnel
-  credentials-file: /home/your-user/.cloudflared/<tunnel-uuid>.json
-  ingress:
-    - hostname: your-domain.com
-      service: http://localhost:5000
-    - service: http_status:404
-  ```
-- Run manually: `cloudflared tunnel run dog-stream-tunnel`
+Enable it:
 
-### 3. DNS Setup
-- In Cloudflare Dashboard: Add site > Enter `your-domain.com` > Update nameservers in your hosted zone (e.g., AWS Route 53) to Cloudflare's.
-- Add CNAME: Name `@` (root), Target `<tunnel-uuid>.cfargotunnel.com`, Proxied (orange cloud).
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now dog-stream.service
+sudo systemctl status dog-stream.service
+```
 
-### 4. Boot Setup for Tunnel (Systemd Service)
-- Create `/etc/systemd/system/cloudflared.service`:
-  ```
-  [Unit]
-  Description=Cloudflare Tunnel for Dog Stream
-  After=network.target
+### Switch control service
 
-  [Service]
-  User=your-user
-  ExecStart=/usr/local/bin/cloudflared tunnel --config /home/your-user/.cloudflared/config.yml run dog-stream-tunnel
-  Restart=always
-  RestartSec=10
+If you use the GPIO switch on `GPIO17`:
 
-  [Install]
-  WantedBy=multi-user.target
-  ```
-- Enable: `sudo systemctl enable --now cloudflared.service`
-- Check: `sudo systemctl status cloudflared.service`
+```bash
+sudo cp service_startup/button-control.service /etc/systemd/system/button-control.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now button-control.service
+```
 
-## Using the Power Button
+This service runs `ky004-control.py`, which monitors the switch and starts or stops the camera stack.
 
-The KY-004 button on GPIO3 (Pin 5) provides hardware power control:
+Update the unit path if your project directory is different.
 
-1. **Shutdown**: Press the button once
-   - Web interface shows "⚠️ Shutting Down..." for 2 seconds
-   - Pi safely shuts down
-2. **Wake Up**: Press the button again while Pi is off
-   - Pi powers back on (GPIO3 hardware wake feature)
-   - All services start automatically on boot
+### Optional Cloudflare Tunnel
 
-### Testing the Button
+Copy `service_startup/cloudflared-tunnel.service` after you have:
 
-After completing the hardware and software setup:
+- installed `cloudflared`
+- created a tunnel
+- created `~/.cloudflared/config.yml`
 
-1. Access the web interface: `http://your-pi-ip:5000`
-2. Observe the stream status indicator in the top-left corner
-3. Press the physical button - you should see "⚠️ Shutting Down..." then the Pi shuts down
-4. Press the button again - Pi powers back on
-5. Check logs: `journalctl -u button-control.service -f`
-   - You should see "Button pressed - Setting shutdown state..." before shutdown
+Then:
 
-## Troubleshooting
-- Camera not starting: Ensure enabled in `raspi-config`; test with `libcamera-hello`.
-- Sensor errors: Verify pull-up resistor; retry logic in code handles checksum issues.
-- Access issues: Check auth creds in `.env`; monitor logs with `journalctl -u dog-stream-flask.service`.
-- Performance: On RPi 3, lower video resolution if CPU/RAM high (edit code: `{"size": (320, 240)}`).
-- Button not working: Check wiring (S→Pin 5, Middle→Pin 2, GND→Pin 6); verify lgpio is available; check logs with `journalctl -u button-control.service -f`.
+```bash
+sudo cp service_startup/cloudflared-tunnel.service /etc/systemd/system/cloudflared-tunnel.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now cloudflared-tunnel.service
+```
+
+## Deploying Updates To The Pi
+
+On the Pi:
+
+```bash
+cd ~/dogo-cam
+git pull
+uv sync
+sudo systemctl restart dog-stream.service
+```
+
+## Notes
+
+- `.env` should stay only on the Pi or your local machine.
+- Servo positions are persisted in `/tmp/servo_positions.json`.
+- The camera stream is flipped because the camera mount is inverted.
