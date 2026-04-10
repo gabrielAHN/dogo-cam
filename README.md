@@ -27,10 +27,41 @@ Tracking has been removed. The current app is manual-only.
 - Raspberry Pi with Raspberry Pi OS
 - CSI camera module
 - 2 MG90S servos for pan and tilt
+- GPIO toggle switch for turning the site stack on and off
 - optional DHT22 sensor on `GPIO4`
-- optional KY-004 button
+- optional Cloudflare Tunnel
 
 See `PIN_DIAGRAM.md` for wiring.
+
+### Raspberry Pi Wiring
+
+| Part | Signal Pin | Raspberry Pi Pin | Notes |
+|------|------------|------------------|-------|
+| Tilt servo | PWM signal | `GPIO18` / physical `Pin 12` | Servo 1 in the app |
+| Pan servo | PWM signal | `GPIO19` / physical `Pin 35` | Servo 2 in the app |
+| Toggle switch | Switch signal | `GPIO17` / physical `Pin 11` | Closing the switch to ground turns the site stack on |
+| Toggle switch | Ground | physical `Pin 6` or `Pin 9` | Open switch turns the site stack off |
+| DHT22 data | Data | `GPIO4` / physical `Pin 7` | Optional sensor |
+
+### Servo Power Notes
+
+- Use a stable `5V` supply sized for both MG90S servos.
+- Share ground between the servo power supply and the Raspberry Pi.
+- The app maps `servo1` to tilt on `GPIO18` and `servo2` to pan on `GPIO19`.
+- The camera mount is inverted, so the stream is flipped in software.
+
+### Switch Behavior
+
+The deployed Raspberry Pi uses a simple on/off switch on `GPIO17`, monitored by `ky004-control.py`.
+
+- switch ON, `GPIO17` pulled low to ground:
+  - start `dog-stream.service`
+  - wait for the Flask app to respond
+  - start `cloudflared-tunnel.service`
+- switch OFF, `GPIO17` floating high:
+  - signal the Flask app to stop the camera cleanly
+  - stop the Cloudflare tunnel
+  - stop the Flask app
 
 ## Manual Controls
 
@@ -127,15 +158,17 @@ sudo systemctl enable --now dog-stream.service
 sudo systemctl status dog-stream.service
 ```
 
-### Optional button service
+### Switch control service
 
-If you use the KY-004 button:
+If you use the GPIO switch on `GPIO17`:
 
 ```bash
 sudo cp service_startup/button-control.service /etc/systemd/system/button-control.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now button-control.service
 ```
+
+This service runs `ky004-control.py`, which monitors the switch and starts or stops the camera stack.
 
 Update the unit path if your project directory is different.
 
