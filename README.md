@@ -37,28 +37,40 @@ See `PIN_DIAGRAM.md` for wiring.
 
 | Part | Signal Pin | Raspberry Pi Pin | Notes |
 |------|------------|------------------|-------|
-| Tilt servo | PWM signal | `GPIO18` / physical `Pin 12` | Servo 1 in the app |
-| Pan servo | PWM signal | `GPIO19` / physical `Pin 35` | Servo 2 in the app |
-| Toggle switch | Switch signal | `GPIO17` / physical `Pin 11` | Closing the switch to ground turns the site stack on |
-| Toggle switch | Ground | physical `Pin 6` or `Pin 9` | Open switch turns the site stack off |
+| CSI camera | Ribbon cable | CSI camera connector | Uses the dedicated camera port, not GPIO |
+| Tilt servo | Signal | `GPIO18` / physical `Pin 12` | Servo 1 in the app |
+| Tilt servo | V+ | physical `Pin 2` (`5V`) | Servo 1 power from Raspberry Pi |
+| Tilt servo | GND | physical `Pin 14` | Shared ground for tilt servo |
+| Pan servo | Signal | `GPIO19` / physical `Pin 35` | Servo 2 in the app |
+| Pan servo | V+ | physical `Pin 4` (`5V`) | Servo 2 power from Raspberry Pi |
+| Pan servo | GND | physical `Pin 39` | Shared ground for pan servo |
+| Toggle switch | Signal | `GPIO17` / physical `Pin 11` | 3-pin switch module signal |
+| Toggle switch | VCC | physical `Pin 17` (`3.3V`) | Use `3.3V` for GPIO-safe switching |
+| Toggle switch | GND | physical `Pin 25` | Module ground |
+| DHT22 VCC | Power | physical `Pin 1` (`3.3V`) | Optional sensor power |
 | DHT22 data | Data | `GPIO4` / physical `Pin 7` | Optional sensor |
+| DHT22 GND | Ground | physical `Pin 9` | Optional sensor ground |
+| Cooling fan | Power | physical `Pin 4` (`5V`) split with pan servo power | Always-on Pi cooling fan |
+| Cooling fan | Ground | physical `Pin 6` | Ground from Raspberry Pi |
 
 ### Servo Power Notes
 
-- Use a stable `5V` supply sized for both MG90S servos.
-- Share ground between the servo power supply and the Raspberry Pi.
+- Both servos are wired directly to the Raspberry Pi `5V` header pins in this wiring map.
+- The cooling fan is also wired to the Raspberry Pi by splitting `Pin 4` (`5V`) with the pan servo power lead.
+- Share ground between all servos, the fan, and the Raspberry Pi.
 - The app maps `servo1` to tilt on `GPIO18` and `servo2` to pan on `GPIO19`.
 - The camera mount is inverted, so the stream is flipped in software.
+- If you add a two-wire fan, wire it to `Pin 4` and `Pin 6`, or to `Pin 1` and ground if it is a `3.3V` fan.
 
 ### Switch Behavior
 
 The deployed Raspberry Pi uses a simple on/off switch on `GPIO17`, monitored by `ky004-control.py`.
 
-- switch ON, `GPIO17` pulled low to ground:
+- switch ON, `GPIO17` reads low:
   - start `dog-stream.service`
   - wait for the Flask app to respond
   - start `cloudflared-tunnel.service`
-- switch OFF, `GPIO17` floating high:
+- switch OFF, `GPIO17` reads high:
   - signal the Flask app to stop the camera cleanly
   - stop the Cloudflare tunnel
   - stop the Flask app
@@ -70,8 +82,8 @@ The deployed Raspberry Pi uses a simple on/off switch on `GPIO17`, monitored by 
   - use `↑ ↓ ← →`
   - use `W A S D`
 - Mobile:
-  - drag up and down on the screen for tilt
-  - drag left and right on the screen for pan
+  - tap or hold above/below center for tilt
+  - tap or hold left/right of center for pan
 
 ## Environment
 

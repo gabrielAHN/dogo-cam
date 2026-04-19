@@ -10,6 +10,29 @@ This is the wiring for the current manual-only `dogo-cam` setup.
 | Toggle switch | On/off signal | `GPIO17` | `Pin 11` |
 | Tilt servo | PWM signal | `GPIO18` | `Pin 12` |
 | Pan servo | PWM signal | `GPIO19` | `Pin 35` |
+| Cooling fan | Power | n/a | `Pin 4` (`5V`) |
+| Cooling fan | Ground | n/a | `Pin 6` (`GND`) |
+| CSI camera | Ribbon cable | n/a | CSI connector, not GPIO |
+
+## Complete Connection List
+
+| Part | Part Pin | Connect To | Raspberry Pi Pin |
+|------|----------|------------|------------------|
+| DHT22 | VCC | `3.3V` | `Pin 1` |
+| DHT22 | Data | `GPIO4` | `Pin 7` |
+| DHT22 | GND | Ground | `Pin 9` |
+| Toggle switch | Signal | `GPIO17` | `Pin 11` |
+| Toggle switch | VCC | `3.3V` | `Pin 17` |
+| Toggle switch | GND | Ground | `Pin 25` |
+| Tilt servo | Signal | `GPIO18` | `Pin 12` |
+| Tilt servo | V+ | `5V` | `Pin 2` |
+| Tilt servo | GND | shared ground | `Pin 14` |
+| Pan servo | Signal | `GPIO19` | `Pin 35` |
+| Pan servo | V+ | `5V` | `Pin 4` |
+| Pan servo | GND | shared ground | `Pin 39` |
+| Cooling fan | Red wire | `5V` | `Pin 4` split with pan servo power |
+| Cooling fan | Black wire | Ground | `Pin 6` |
+| CSI camera | Ribbon cable | CSI camera connector | CSI port between HDMI and audio/video connectors |
 
 ## 40-Pin Header View
 
@@ -48,17 +71,18 @@ Use a `4.7kΩ` to `10kΩ` pull-up resistor between DHT22 `VCC` and `Data`.
 
 ## Toggle Switch
 
-The current switch is a simple on/off switch used by `ky004-control.py`.
+The current switch is documented here as a 3-pin switch module used by `ky004-control.py`.
 
-| Switch Side | Connect To | Raspberry Pi Pin |
-|-------------|------------|------------------|
-| Side A | `GPIO17` | `Pin 11` |
-| Side B | Ground | `Pin 6` or `Pin 9` |
+| Switch Pin | Connect To | Raspberry Pi Pin |
+|------------|------------|------------------|
+| Signal | `GPIO17` | `Pin 11` |
+| VCC | `3.3V` | `Pin 17` |
+| GND | Ground | `Pin 25` |
 
 Behavior:
 
-- switch closed to ground: site stack starts
-- switch open: site stack stops
+- signal low: site stack starts
+- signal high: site stack stops
 
 ## Servo Wiring
 
@@ -69,22 +93,43 @@ The app uses two MG90S servos:
 
 ### Tilt Servo
 
-| Servo Wire | Connect To |
-|------------|------------|
-| Signal | `GPIO18` / `Pin 12` |
-| Power | external `5V` recommended |
-| Ground | shared ground with Raspberry Pi |
+| Servo Wire | Connect To | Raspberry Pi Pin |
+|------------|------------|------------------|
+| Signal | `GPIO18` | `Pin 12` |
+| Power | `5V` | `Pin 2` |
+| Ground | Ground | `Pin 14` |
 
 ### Pan Servo
 
-| Servo Wire | Connect To |
-|------------|------------|
-| Signal | `GPIO19` / `Pin 35` |
-| Power | external `5V` recommended |
-| Ground | shared ground with Raspberry Pi |
+| Servo Wire | Connect To | Raspberry Pi Pin |
+|------------|------------|------------------|
+| Signal | `GPIO19` | `Pin 35` |
+| Power | `5V` | `Pin 4` |
+| Ground | Ground | `Pin 39` |
+
+## Cooling Fan
+
+Use a simple always-on two-wire fan unless you have a separate fan controller.
+
+| Fan Wire | Connect To | Raspberry Pi Pin |
+|----------|------------|------------------|
+| Red | `5V` | `Pin 4` split with pan servo power |
+| Black | Ground | `Pin 6` |
+
+If your fan is a `3.3V` fan, connect power to `Pin 1` instead of `Pin 4`.
+
+## CSI Camera
+
+The camera does not use the 40-pin GPIO header.
+
+| Camera Connection | Connect To |
+|-------------------|------------|
+| Ribbon cable | Raspberry Pi CSI camera connector |
 
 ## Power Notes
 
 - Do not rely on weak USB power if both servos move under load.
-- Use a power source that can handle the camera and both servos safely.
+- Use a Raspberry Pi power supply that can handle the camera, both servos, and the fan safely.
 - Always connect the servo ground and Raspberry Pi ground together.
+- A `5V` fan adds constant load to the Pi power rail, so use a stable Raspberry Pi power supply.
+- The Pi only has two `5V` pins, so the cooling fan is plugged into the Pi by splitting `Pin 4` with the pan servo power lead.
