@@ -28,6 +28,8 @@
             align-items: center;
             justify-content: center;
             position: relative;
+            touch-action: none;
+            user-select: none;
         }
 
         h1 {
@@ -58,8 +60,6 @@
             z-index: 10;
             font-family: 'Roboto', sans-serif;
         }
-
-        /* Servo status CSS removed */
 
         #stream-status {
             color: #fff;
@@ -100,7 +100,6 @@
             transform: scale(0.95);
         }
 
-        /* Settings Button */
         #settings-btn {
             position: absolute;
             top: 20px;
@@ -128,7 +127,6 @@
             transform: scale(0.95);
         }
 
-        /* Settings Modal */
         #servo-controls-modal {
             display: none;
             position: fixed;
@@ -368,7 +366,6 @@
             opacity: 1;
         }
 
-        /* Mobile responsive adjustments */
         @media (max-width: 768px) {
             #servo-controls {
                 bottom: 60px;
@@ -398,18 +395,15 @@
         <div id="stream-status" hx-get="/stream_status" hx-trigger="load, every 2s" hx-swap="innerHTML">
             Checking status...
         </div>
-        <!-- Settings Button -->
         <button id="settings-btn" title="Camera Settings" onclick="toggleServoModal()">⚙</button>
 
         <button id="fullscreen-btn" title="Toggle Fullscreen">⛶</button>
 
-        <!-- Settings Modal -->
         {% if servo_available %}
         <div id="servo-controls-modal">
             <span class="close-modal" onclick="toggleServoModal()">×</span>
             <div id="servo-controls">
                 <div class="modal-header">⚙ Camera Controls</div>
-                <!-- Manual Control Panel -->
                 <div id="panel-manual" class="servo-panel visible">
                     <div class="servo-label"><span>Tilt</span><span class="servo-value" id="servo1-angle">--</span></div>
                     <div class="servo-buttons tilt-buttons">
@@ -427,7 +421,7 @@
 
                     <div class="controls-hint">
                         <div><strong>Keyboard:</strong> <span class="keyboard-hint">↑↓←→</span> or <span class="keyboard-hint">WASD</span></div>
-                        <div style="margin-top: 5px;"><strong>Touch:</strong> Drag on screen</div>
+                        <div style="margin-top: 5px;"><strong>Touch:</strong> Tap or hold the screen direction</div>
                     </div>
                 </div>
             </div>
@@ -445,17 +439,13 @@
         </div>
         {% endif %}
 
-        <!-- Servo Status Display - Removed -->
-
         <div id="temp" hx-get="/temp" hx-trigger="load, every 10s" hx-swap="innerHTML">
             Loading temperature...
         </div>
     </div>
 
     <script>
-        console.log('=== SCRIPT STARTED ===');
         const fullscreenBtn = document.getElementById('fullscreen-btn');
-        console.log('Fullscreen button:', fullscreenBtn);
         const container = document.body;
         const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
         let mobileFullscreen = false;
@@ -530,31 +520,18 @@
             fullscreenBtn.textContent = isFullscreen() ? '✕' : '⛶';
         }
 
-        let currentMode = 'manual';
-
-        function setManualPanel() {
-            const panel = document.getElementById('panel-manual');
-            if (panel) {
-                panel.classList.add('visible');
-            }
-        }
-
         function toggleServoModal() {
-            console.log('toggleServoModal called');
             const modal = document.getElementById('servo-controls-modal');
             if (!modal) {
-                console.error('Modal not found!');
                 return;
             }
 
             modal.classList.toggle('active');
-            setManualPanel();
         }
 
-        // Close modal when clicking outside the controls
         document.addEventListener('click', function(event) {
             const modal = document.getElementById('servo-controls-modal');
-            if (!modal) return; // Modal doesn't exist if servo not available
+            if (!modal) return;
 
             const controls = document.getElementById('servo-controls');
             const settingsBtn = document.getElementById('settings-btn');
@@ -569,13 +546,19 @@
 
         {% if servo_available %}
 
-        let lastMoveTime = 0;
-        const MOVE_THROTTLE_MS = 150;
+        const MOVE_THROTTLE_MS = 75;
+        const moveState = {
+            servo1: { last: 0, pending: false },
+            servo2: { last: 0, pending: false }
+        };
 
-        async function moveServo(axis, direction) {
+        async function moveServo(axis, direction, force = false) {
             const now = Date.now();
-            if (now - lastMoveTime < MOVE_THROTTLE_MS) return;
-            lastMoveTime = now;
+            const state = moveState[axis];
+            if (!state || state.pending) return;
+            if (!force && now - state.last < MOVE_THROTTLE_MS) return;
+            state.last = now;
+            state.pending = true;
 
             try {
                 const response = await fetch('/servo/move', {
@@ -592,24 +575,33 @@
                 }
             } catch (error) {
                 console.error('Error moving servo:', error);
+            } finally {
+                state.pending = false;
             }
         }
 
-        let holdInterval = null;
+        const holdIntervals = new Map();
 
-        function startHold(axis, direction) {
-            if (holdInterval) stopHold();
-            moveServo(axis, direction);
-            holdInterval = setInterval(() => {
+        function startHold(id, axis, direction) {
+            stopHold(id);
+            moveServo(axis, direction, true);
+            const interval = setInterval(() => {
                 moveServo(axis, direction);
             }, MOVE_THROTTLE_MS);
+            holdIntervals.set(id, interval);
         }
 
-        function stopHold() {
-            if (holdInterval) {
-                clearInterval(holdInterval);
-                holdInterval = null;
+        function stopHold(id) {
+            const interval = holdIntervals.get(id);
+            if (interval) {
+                clearInterval(interval);
+                holdIntervals.delete(id);
             }
+        }
+
+        function stopAllHolds() {
+            holdIntervals.forEach((interval) => clearInterval(interval));
+            holdIntervals.clear();
         }
 
         function setupServoButtons() {
@@ -624,65 +616,57 @@
                 const btn = document.getElementById(id);
                 if (!btn) return;
 
-                // Mouse/Touch hold-to-move handlers
                 btn.addEventListener('mousedown', (e) => {
                     e.preventDefault();
                     if (!btn.disabled) {
-                        startHold(axis, direction);
+                        startHold(id, axis, direction);
                     }
                 });
 
                 btn.addEventListener('mouseup', (e) => {
                     e.preventDefault();
-                    stopHold();
+                    stopHold(id);
                 });
 
                 btn.addEventListener('mouseleave', (e) => {
-                    stopHold();
+                    stopHold(id);
                 });
 
-                // Touch hold-to-move handlers
                 btn.addEventListener('touchstart', (e) => {
                     e.preventDefault();
                     if (!btn.disabled) {
-                        startHold(axis, direction);
+                        startHold(id, axis, direction);
                     }
                 });
 
                 btn.addEventListener('touchend', (e) => {
                     e.preventDefault();
-                    stopHold();
+                    stopHold(id);
                 });
 
                 btn.addEventListener('touchcancel', (e) => {
-                    stopHold();
+                    stopHold(id);
                 });
             });
         }
 
         document.addEventListener('DOMContentLoaded', () => {
-            setManualPanel();
             setupServoButtons();
             loadServoState();
         });
 
-        // Keyboard Controls (Arrow keys and WASD) - Hold to move
-        let keyboardEnabled = false;
         let pressedKeys = new Set();
 
         function handleKeyDown(e) {
-            if (!keyboardEnabled || currentMode !== 'manual') return;
-            if (document.activeElement.tagName === 'INPUT') return; // Don't interfere with inputs
+            if (document.activeElement.tagName === 'INPUT') return;
 
             const key = e.key.toLowerCase();
 
-            // Ignore if already holding this key (prevents key repeat)
             if (pressedKeys.has(key)) return;
 
             let axis, direction;
 
             switch(key) {
-                // Arrow keys
                 case 'arrowup':
                 case 'w':
                     axis = 'servo1';
@@ -709,66 +693,65 @@
 
             e.preventDefault();
             pressedKeys.add(key);
-            startHold(axis, direction);
+            startHold(`key-${key}`, axis, direction);
         }
 
         function handleKeyUp(e) {
             const key = e.key.toLowerCase();
             if (pressedKeys.has(key)) {
                 pressedKeys.delete(key);
-                stopHold();
+                stopHold(`key-${key}`);
             }
         }
 
         document.addEventListener('keydown', handleKeyDown);
         document.addEventListener('keyup', handleKeyUp);
 
-        // Stop movement when window loses focus
         window.addEventListener('blur', () => {
             pressedKeys.clear();
-            stopHold();
+            stopAllHolds();
         });
 
-        keyboardEnabled = true;
+        function isScreenMoveTarget(target) {
+            return !target.closest('button, input, a, #servo-controls-modal, #settings-btn, #fullscreen-btn, #temp, #stream-status');
+        }
 
-        let touchLastX = 0;
-        let touchLastY = 0;
-        const touchMoveThreshold = 28;
+        function getScreenMove(clientX, clientY) {
+            const container = document.getElementById('video-container');
+            const rect = container.getBoundingClientRect();
+            const centerX = rect.left + rect.width / 2;
+            const centerY = rect.top + rect.height / 2;
+            const deltaX = clientX - centerX;
+            const deltaY = clientY - centerY;
+            const deadZone = Math.min(rect.width, rect.height) * 0.08;
 
-        document.addEventListener('touchstart', (e) => {
-            if (currentMode !== 'manual' || e.touches.length !== 1) return;
-            touchLastX = e.touches[0].clientX;
-            touchLastY = e.touches[0].clientY;
-        }, { passive: true });
-
-        document.addEventListener('touchmove', (e) => {
-            if (currentMode !== 'manual' || e.touches.length !== 1) return;
-
-            const touchX = e.touches[0].clientX;
-            const touchY = e.touches[0].clientY;
-            const deltaX = touchX - touchLastX;
-            const deltaY = touchY - touchLastY;
-
-            if (Math.abs(deltaX) < touchMoveThreshold && Math.abs(deltaY) < touchMoveThreshold) {
-                return;
+            if (Math.abs(deltaX) < deadZone && Math.abs(deltaY) < deadZone) {
+                return null;
             }
-
-            e.preventDefault();
 
             if (Math.abs(deltaY) >= Math.abs(deltaX)) {
-                moveServo('servo1', deltaY > 0 ? 'down' : 'up');
-            } else {
-                moveServo('servo2', deltaX > 0 ? 'right' : 'left');
+                return { axis: 'servo1', direction: deltaY > 0 ? 'down' : 'up' };
             }
 
-            touchLastX = touchX;
-            touchLastY = touchY;
-        }, { passive: false });
+            return { axis: 'servo2', direction: deltaX > 0 ? 'right' : 'left' };
+        }
 
-        document.addEventListener('touchend', () => {
-            touchLastX = 0;
-            touchLastY = 0;
-        }, { passive: true });
+        function startScreenMove(e) {
+            if (!isScreenMoveTarget(e.target)) return;
+            if (e.pointerType === 'mouse' && e.button !== 0) return;
+            const move = getScreenMove(e.clientX, e.clientY);
+            if (!move) return;
+            e.preventDefault();
+            startHold('screen', move.axis, move.direction);
+        }
+
+        function stopScreenMove() {
+            stopHold('screen');
+        }
+
+        document.getElementById('video-container').addEventListener('pointerdown', startScreenMove);
+        document.addEventListener('pointerup', stopScreenMove);
+        document.addEventListener('pointercancel', stopScreenMove);
 
         async function resetServos() {
             const btn = document.getElementById('btn-reset');
@@ -786,7 +769,6 @@
                 if (response.ok) {
                     const data = await response.json();
                     updateButtonStates(data);
-                    console.log('Reset complete:', data);
                 } else {
                     console.error('Reset failed:', response.status);
                 }
@@ -835,19 +817,11 @@
             }
         }
 
-        // Load initial servo state and update displays
         async function loadServoState() {
-            console.log('=== loadServoState called ===');
             try {
                 const response = await fetch('/servo/position');
-                console.log('Servo position response:', response.status);
                 if (response.ok) {
                     const data = await response.json();
-                    console.log('Servo position data:', data);
-
-                    // Servo displays removed
-
-                    // Update button states
                     updateButtonStates(data);
                 } else {
                     console.error('Failed to fetch servo position:', response.status);
@@ -857,8 +831,6 @@
             }
         }
 
-        // Auto-refresh servo positions every 2 seconds to detect manual movements
-        console.log('=== Setting up auto-refresh interval ===');
         setInterval(loadServoState, 2000);
         {% endif %}
 

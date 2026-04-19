@@ -13,6 +13,3 @@ LimitNOFILE=4096
 OOMScoreAdjust=-1000
 
 [Install]
-# Service is started manually by button-control.service
-# Not auto-started on boot to save power
-# WantedBy=multi-user.target
