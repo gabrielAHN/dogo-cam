@@ -86,7 +86,11 @@ def init_camera():
         from picamera2.outputs import FileOutput
 
         logger.info("Attempting to initialize camera")
-        camera = Picamera2()
+        camera_info = Picamera2.global_camera_info()
+        if not camera_info:
+            raise RuntimeError("No cameras detected by Picamera2")
+        logger.info(f"Detected cameras: {camera_info}")
+        camera = Picamera2(0)
         config = camera.create_video_configuration(
             main={"size": (640, 480)},
             transform=Transform(hflip=True, vflip=True),
