@@ -9,6 +9,7 @@ import urllib.request
 import lgpio
 
 SWITCH_PIN = 17
+SWITCH_ON_VALUE = int(os.getenv("SWITCH_ON_VALUE", "1"))
 STREAM_SVC = "dog-stream.service"
 CF_SVC = "cloudflared-tunnel.service"
 URL = "http://localhost:5000/login"
@@ -66,8 +67,56 @@ def site_up():
         return False
 
 
-def run(cmd):
-    return subprocess.run(cmd, capture_output=True, timeout=15).returncode == 0
+def run(cmd, timeout=15):
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        log.warning(f"Timed out running: {' '.join(cmd)}")
+        return False
+    except Exception as e:
+        log.warning(f"Failed running {' '.join(cmd)}: {e}")
+        return False
+
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        log.warning(f"Command failed ({result.returncode}): {' '.join(cmd)} {detail}")
+    return result.returncode == 0
+
+
+def service_state(name):
+    try:
+        result = subprocess.run(
+            ["systemctl", "is-active", name],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        return result.stdout.strip() or "unknown"
+    except Exception:
+        return "unknown"
+
+
+def wait_inactive(name, seconds):
+    for _ in range(seconds * 2):
+        if service_state(name) in {"inactive", "failed", "unknown"}:
+            return True
+        time.sleep(0.5)
+    return False
+
+
+def stop_service(name):
+    run(["sudo", "systemctl", "--no-block", "stop", name], timeout=5)
+    if wait_inactive(name, 12):
+        return
+
+    log.warning(f"{name} did not stop cleanly, killing it")
+    run(["sudo", "systemctl", "kill", "--signal=SIGKILL", name], timeout=5)
+    run(["sudo", "systemctl", "--no-block", "stop", name], timeout=5)
+    wait_inactive(name, 5)
+
+
+def switch_label(state):
+    return "ON" if state == SWITCH_ON_VALUE else "OFF"
 
 
 def start():
@@ -111,8 +160,10 @@ def stop():
     time.sleep(1)
 
     log.info("Camera stopped, stopping services...")
-    run(["sudo", "systemctl", "stop", CF_SVC])
-    run(["sudo", "systemctl", "stop", STREAM_SVC])
+    run(["sudo", "systemctl", "--no-block", "stop", CF_SVC], timeout=5)
+    run(["sudo", "systemctl", "--no-block", "stop", STREAM_SVC], timeout=5)
+    stop_service(CF_SVC)
+    stop_service(STREAM_SVC)
 
     try:
         os.remove(SHUTDOWN_FILE)
@@ -139,9 +190,9 @@ def main():
     while state is None:
         state = read()
 
-    log.info(f"Switch is {'ON' if state == 0 else 'OFF'} on startup")
+    log.info(f"Switch is {switch_label(state)} on startup (GPIO{SWITCH_PIN}={state})")
 
-    if state == 0:
+    if state == SWITCH_ON_VALUE:
         start() if not site_up() else (led_on() or log.info("Site already up"))
     else:
         stop()
@@ -153,7 +204,8 @@ def main():
             new = read()
             if new is not None and new != state:
                 state = new
-                if state == 0:
+                log.info(f"Switch changed to {switch_label(state)} (GPIO{SWITCH_PIN}={state})")
+                if state == SWITCH_ON_VALUE:
                     start()
                 else:
                     stop()

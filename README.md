@@ -66,14 +66,16 @@ See `PIN_DIAGRAM.md` for wiring.
 
 The deployed Raspberry Pi uses a simple on/off switch on `GPIO17`, monitored by `ky004-control.py`.
 
-- switch ON, `GPIO17` reads low:
+- switch ON, `GPIO17` reads high:
   - start `dog-stream.service`
   - wait for the Flask app to respond
   - start `cloudflared-tunnel.service`
-- switch OFF, `GPIO17` reads high:
+- switch OFF, `GPIO17` reads low:
   - signal the Flask app to stop the camera cleanly
   - stop the Cloudflare tunnel
   - stop the Flask app
+
+If your switch module reports the opposite value, set `SWITCH_ON_VALUE=0` in the environment used by `button-control.service`.
 
 ## Manual Controls
 
