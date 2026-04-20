@@ -9,7 +9,7 @@ import urllib.request
 import lgpio
 
 SWITCH_PIN = 17
-SWITCH_ON_VALUE = int(os.getenv("SWITCH_ON_VALUE", "1"))
+SWITCH_ON_VALUE = int(os.getenv("SWITCH_ON_VALUE", "0"))
 STREAM_SVC = "dog-stream.service"
 CF_SVC = "cloudflared-tunnel.service"
 URL = "http://localhost:5000/login"
