@@ -8,8 +8,10 @@ import urllib.request
 
 import lgpio
 
-SWITCH_PIN = 17
+SWITCH_PIN = int(os.getenv("SWITCH_PIN", "17"))
 SWITCH_ON_VALUE = int(os.getenv("SWITCH_ON_VALUE", "0"))
+SWITCH_LOG_INTERVAL = float(os.getenv("SWITCH_LOG_INTERVAL", "10"))
+SWITCH_RECONCILE_INTERVAL = float(os.getenv("SWITCH_RECONCILE_INTERVAL", "5"))
 STREAM_SVC = "dog-stream.service"
 CF_SVC = "cloudflared-tunnel.service"
 URL = "http://localhost:5000/login"
@@ -115,6 +117,10 @@ def stop_service(name):
     wait_inactive(name, 5)
 
 
+def reset_failed_services():
+    run(["sudo", "systemctl", "reset-failed"], timeout=5)
+
+
 def switch_label(state):
     return "ON" if state == SWITCH_ON_VALUE else "OFF"
 
@@ -122,6 +128,7 @@ def switch_label(state):
 def start():
     log.info("ON: starting Flask...")
     led_flicker()
+    reset_failed_services()
     run(["sudo", "systemctl", "start", STREAM_SVC])
 
     for i in range(60):
@@ -164,6 +171,7 @@ def stop():
     run(["sudo", "systemctl", "--no-block", "stop", STREAM_SVC], timeout=5)
     stop_service(CF_SVC)
     stop_service(STREAM_SVC)
+    reset_failed_services()
 
     try:
         os.remove(SHUTDOWN_FILE)
@@ -173,6 +181,25 @@ def stop():
     led_stop_flicker()
     led_off()
     log.info("Services stopped")
+
+
+def active_or_stopping(name):
+    return service_state(name) in {"active", "activating", "deactivating"}
+
+
+def apply_state(state, force_led=False):
+    if state == SWITCH_ON_VALUE:
+        if not site_up() or service_state(STREAM_SVC) != "active" or service_state(CF_SVC) != "active":
+            start()
+        elif force_led:
+            led_on()
+        return
+
+    if site_up() or active_or_stopping(STREAM_SVC) or active_or_stopping(CF_SVC):
+        stop()
+    else:
+        if force_led:
+            led_off()
 
 
 def main():
@@ -192,12 +219,11 @@ def main():
 
     log.info(f"Switch is {switch_label(state)} on startup (GPIO{SWITCH_PIN}={state})")
 
-    if state == SWITCH_ON_VALUE:
-        start() if not site_up() else (led_on() or log.info("Site already up"))
-    else:
-        stop()
+    apply_state(state, force_led=True)
 
-    log.info("Monitoring GPIO17 for switch changes...")
+    log.info(f"Monitoring GPIO{SWITCH_PIN} for switch changes...")
+    last_log = time.time()
+    last_reconcile = time.time()
 
     try:
         while True:
@@ -205,10 +231,13 @@ def main():
             if new is not None and new != state:
                 state = new
                 log.info(f"Switch changed to {switch_label(state)} (GPIO{SWITCH_PIN}={state})")
-                if state == SWITCH_ON_VALUE:
-                    start()
-                else:
-                    stop()
+                apply_state(state)
+            if time.time() - last_log >= SWITCH_LOG_INTERVAL:
+                log.info(f"Switch raw state: GPIO{SWITCH_PIN}={state} ({switch_label(state)})")
+                last_log = time.time()
+            if time.time() - last_reconcile >= SWITCH_RECONCILE_INTERVAL:
+                apply_state(state)
+                last_reconcile = time.time()
             time.sleep(0.1)
     except KeyboardInterrupt:
         log.info("Stopped")

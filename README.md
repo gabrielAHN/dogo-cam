@@ -75,7 +75,7 @@ The deployed Raspberry Pi uses a simple on/off switch on `GPIO17`, monitored by 
   - stop the Cloudflare tunnel
   - stop the Flask app
 
-If your switch module reports the opposite value, set `SWITCH_ON_VALUE=1` in the environment used by `button-control.service`.
+If your switch module reports the opposite value, set `SWITCH_ON_VALUE=1` in the environment used by `button-control.service`. If the signal is on a different GPIO, set `SWITCH_PIN` to that BCM GPIO number. The switch controller continuously reconciles the services with the current GPIO state so missed transitions or manual service changes are corrected.
 
 ## Manual Controls
 
