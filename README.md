@@ -91,6 +91,12 @@ If your switch module reports the opposite value, set `SWITCH_ON_VALUE=1` in the
 
 Create a local `.env` in the project root on the Raspberry Pi. Do not commit it.
 
+Start from `.env.example`:
+
+```bash
+cp .env.example .env
+```
+
 ```env
 BASIC_AUTH_USERNAME=your_username
 BASIC_AUTH_PASSWORD=your_password
@@ -98,7 +104,24 @@ SECRET_KEY=replace_me
 MAX_VIEWERS=3
 PORT=5000
 DOG_NAME=Kotaro
+SWITCH_PIN=17
+SWITCH_ON_VALUE=0
+SWITCH_LOG_INTERVAL=10
+SWITCH_RECONCILE_INTERVAL=5
+ENABLE_CLOUDFLARED=1
+CLOUDFLARED_CONFIG=/home/your-user/.cloudflared/config.yml
+CLOUDFLARED_TUNNEL=dog-stream-tunnel
+TRUST_PROXY_HEADERS=0
+TRUST_PROXY_AUTH_HEADERS=0
+DOGCAM_CONTROL_GROUPS=admin,admins,dogo_operators
+DOGCAM_HOME_URL=/
+DOGCAM_AUTH_SETTINGS_URL=
+DOGCAM_LOGOUT_URL=/logout
 ```
+
+`ENABLE_CLOUDFLARED=1` is for standalone Raspberry Pi tunnel mode. Use `ENABLE_CLOUDFLARED=0` when another host, such as a Mac mini running Traefik, Authelia, and Cloudflare, owns the public domain and proxies to the Pi over local networking.
+
+When the app is behind a trusted reverse proxy, set `TRUST_PROXY_HEADERS=1` so generated UI routes honor forwarded host, protocol, and prefix headers. If that proxy is Authelia, set `TRUST_PROXY_AUTH_HEADERS=1` so requests with a `Remote-User` header are treated as authenticated. Camera movement is allowed only for users in `DOGCAM_CONTROL_GROUPS`; other authenticated users can view the stream without servo controls. Keep both proxy trust flags at `0` for standalone Raspberry Pi mode unless a trusted reverse proxy strips incoming auth headers and sets its own.
 
 ## Raspberry Pi Setup
 
@@ -188,11 +211,15 @@ Update the unit path if your project directory is different.
 
 ### Optional Cloudflare Tunnel
 
+Use this mode when the Raspberry Pi should hold the Cloudflare tunnel itself.
+
 Copy `service_startup/cloudflared-tunnel.service` after you have:
 
 - installed `cloudflared`
 - created a tunnel
 - created `~/.cloudflared/config.yml`
+- set `ENABLE_CLOUDFLARED=1` in `.env`
+- set `CLOUDFLARED_CONFIG` and `CLOUDFLARED_TUNNEL` in `.env` if your paths or tunnel name differ from the defaults
 
 Then:
 
@@ -201,6 +228,24 @@ sudo cp service_startup/cloudflared-tunnel.service /etc/systemd/system/cloudflar
 sudo systemctl daemon-reload
 sudo systemctl enable --now cloudflared-tunnel.service
 ```
+
+### Mac Mini Proxy Mode
+
+Use this mode when a Mac mini or another host owns the public domain, Cloudflare Tunnel, Authelia, and reverse proxy rules.
+
+On the Raspberry Pi:
+
+```env
+ENABLE_CLOUDFLARED=0
+TRUST_PROXY_HEADERS=1
+TRUST_PROXY_AUTH_HEADERS=1
+DOGCAM_CONTROL_GROUPS=admin,admins,dogo_operators
+DOGCAM_HOME_URL=https://your-domain.example/
+DOGCAM_AUTH_SETTINGS_URL=https://auth.your-domain.example/settings
+DOGCAM_LOGOUT_URL=https://auth.your-domain.example/logout
+```
+
+Run only the Flask app and switch controller on the Pi. Configure the Mac mini reverse proxy to reach `http://<pi-lan-ip>:5000` or a local forwarded port, and preserve standard forwarded headers such as `X-Forwarded-Proto`, `X-Forwarded-Host`, and `X-Forwarded-Prefix` if the app is served under a path. Keep Cloudflare credentials and Authelia secrets on the host that owns the public domain.
 
 ## Deploying Updates To The Pi
 

@@ -4,7 +4,10 @@ After=network.target
 
 [Service]
 User=your-user
-ExecStart=/usr/local/bin/cloudflared tunnel --config /home/your-user/.cloudflared/config.yml run dog-stream-tunnel
+EnvironmentFile=-/home/your-user/dogo-cam/.env
+Environment=CLOUDFLARED_CONFIG=/home/your-user/.cloudflared/config.yml
+Environment=CLOUDFLARED_TUNNEL=dog-stream-tunnel
+ExecStart=/usr/local/bin/cloudflared tunnel --config ${CLOUDFLARED_CONFIG} run ${CLOUDFLARED_TUNNEL}
 Restart=always
 RestartSec=10
 

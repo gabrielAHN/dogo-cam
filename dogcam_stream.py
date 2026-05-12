@@ -11,6 +11,7 @@ import board
 from dotenv import load_dotenv
 from flask import Flask, Response, jsonify, redirect, render_template, request, session, url_for
 from functools import wraps
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -20,6 +21,8 @@ load_dotenv()
 app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY", os.urandom(24).hex())
 app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=1)
+if os.getenv("TRUST_PROXY_HEADERS", "0").lower() in {"1", "true", "yes", "on"}:
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 viewer_semaphore = threading.Semaphore(int(os.getenv("MAX_VIEWERS", 3)))
 
 camera = None
@@ -64,8 +67,56 @@ output = StreamingOutput()
 def login_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        if not session.get("logged_in"):
+        if not is_authenticated():
             return redirect(url_for("login", next=request.url))
+        return f(*args, **kwargs)
+
+    return decorated_function
+
+
+def authelia_user():
+    if not trust_proxy_auth_headers():
+        return None
+    return request.headers.get("Remote-User")
+
+
+def authelia_groups():
+    if not trust_proxy_auth_headers():
+        return set()
+    groups = request.headers.get("Remote-Groups", "")
+    return {group.strip() for group in groups.split(",") if group.strip()}
+
+
+def env_set(name, default):
+    return {item.strip() for item in os.getenv(name, default).split(",") if item.strip()}
+
+
+def trust_proxy_auth_headers():
+    return os.getenv("TRUST_PROXY_AUTH_HEADERS", "0").lower() in {"1", "true", "yes", "on"}
+
+
+def is_authenticated():
+    return bool(authelia_user()) or bool(session.get("logged_in"))
+
+
+def can_control_camera():
+    if authelia_user():
+        groups = authelia_groups()
+        return bool(groups & env_set("DOGCAM_CONTROL_GROUPS", "admin,admins,dogo_operators"))
+    return bool(session.get("logged_in"))
+
+
+def env_url(name, default=""):
+    return os.getenv(name, default).strip()
+
+
+def camera_control_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not is_authenticated():
+            return redirect(url_for("login", next=request.url))
+        if not can_control_camera():
+            return jsonify({"error": "Camera control is not allowed for this user"}), 403
         return f(*args, **kwargs)
 
     return decorated_function
@@ -188,6 +239,12 @@ def login():
     return render_template("login.html", error=error)
 
 
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
+
+
 def gen():
     if not camera_available:
         yield b""
@@ -208,7 +265,10 @@ def index():
         "index.html",
         dog_name=dog_name,
         camera_available=camera_available,
-        servo_available=servo_available,
+        servo_available=servo_available and can_control_camera(),
+        home_url=env_url("DOGCAM_HOME_URL", "/"),
+        auth_settings_url=env_url("DOGCAM_AUTH_SETTINGS_URL"),
+        logout_url=env_url("DOGCAM_LOGOUT_URL", url_for("logout")),
     )
 
 
@@ -294,7 +354,7 @@ def camera_status():
 
 
 @app.route("/servo/move", methods=["POST"])
-@login_required
+@camera_control_required
 def servo_move():
     if not servo_available:
         return jsonify({"error": "Servo control not available"}), 503
@@ -351,7 +411,7 @@ def servo_position():
 
 
 @app.route("/servo/reset", methods=["POST"])
-@login_required
+@camera_control_required
 def servo_reset():
     if not servo_available:
         return jsonify({"error": "Servo control not available"}), 503

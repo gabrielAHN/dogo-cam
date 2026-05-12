@@ -5,7 +5,7 @@ After=network.target
 [Service]
 User=your-user
 WorkingDirectory=/home/your-user/dogo-cam
-EnvironmentFile=/home/your-user/dogo-cam/.env
+EnvironmentFile=-/home/your-user/dogo-cam/.env
 ExecStart=/home/your-user/.local/bin/uv run gunicorn --worker-class gthread --workers 1 --threads 4 --bind 0.0.0.0:5000 dogcam_stream:app
 Restart=always
 RestartSec=10
@@ -13,3 +13,4 @@ LimitNOFILE=4096
 OOMScoreAdjust=-1000
 
 [Install]
+WantedBy=multi-user.target

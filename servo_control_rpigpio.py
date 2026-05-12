@@ -98,11 +98,11 @@ class ServoController:
         if servo == 1:
             old_angle = self.servo1_angle
             if direction == "up":
-                new_angle = max(SERVO1_MIN_TILT, self.servo1_angle - STEP_SIZE)
-            elif direction == "down":
                 new_angle = min(180, self.servo1_angle + STEP_SIZE)
+            elif direction == "down":
+                new_angle = max(SERVO1_MIN_TILT, self.servo1_angle - STEP_SIZE)
             else:
-                return False, self.servo1_angle, self.servo1_angle > SERVO1_MIN_TILT, self.servo1_angle < 180
+                return False, self.servo1_angle, self.servo1_angle < 180, self.servo1_angle > SERVO1_MIN_TILT
 
             if new_angle != old_angle:
                 logger.info(f"Servo1 {direction}: {old_angle}° → {new_angle}°")
@@ -111,7 +111,7 @@ class ServoController:
                 self.last_servo1_time = time.time()
                 self.save_positions()
 
-            return True, self.servo1_angle, self.servo1_angle > SERVO1_MIN_TILT, self.servo1_angle < 180
+            return True, self.servo1_angle, self.servo1_angle < 180, self.servo1_angle > SERVO1_MIN_TILT
 
         old_angle = self.servo2_angle
         if direction == "left":
@@ -159,8 +159,8 @@ class ServoController:
             return {
                 "servo1": self.servo1_angle,
                 "servo2": self.servo2_angle,
-                "can_servo1_up": self.servo1_angle > SERVO1_MIN_TILT,
-                "can_servo1_down": self.servo1_angle < 180,
+                "can_servo1_up": self.servo1_angle < 180,
+                "can_servo1_down": self.servo1_angle > SERVO1_MIN_TILT,
                 "can_servo2_left": self.servo2_angle > 0,
                 "can_servo2_right": self.servo2_angle < 180,
             }
