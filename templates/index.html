@@ -74,6 +74,47 @@
             font-size: 14px;
         }
 
+        #top-actions {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            z-index: 11;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+            max-width: min(76vw, 720px);
+        }
+
+        .top-action {
+            min-height: 44px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            background-color: rgba(0, 0, 0, 0.6);
+            color: #fff;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-radius: 8px;
+            padding: 0 14px;
+            font-size: 14px;
+            line-height: 1;
+            cursor: pointer;
+            font-family: 'Roboto', sans-serif;
+            text-decoration: none;
+            transition: all 0.3s ease;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .top-action:hover {
+            background-color: rgba(0, 0, 0, 0.8);
+            border-color: rgba(255, 255, 255, 0.6);
+        }
+
+        .top-action:active {
+            transform: scale(0.95);
+        }
+
         #fullscreen-btn {
             position: absolute;
             top: 20px;
@@ -116,6 +157,19 @@
             transition: all 0.3s ease;
             -webkit-tap-highlight-color: transparent;
             display: {% if servo_available %}block{% else %}none{% endif %};
+        }
+
+        #top-actions #fullscreen-btn,
+        #top-actions #settings-btn {
+            position: static;
+            top: auto;
+            right: auto;
+            min-width: 44px;
+            padding: 0 12px;
+        }
+
+        #top-actions #settings-btn {
+            display: {% if servo_available %}inline-flex{% else %}none{% endif %};
         }
 
         #settings-btn:hover {
@@ -352,6 +406,7 @@
         body.mobile-fullscreen h1,
         body.mobile-fullscreen #temp,
         body.mobile-fullscreen #stream-status,
+        body.mobile-fullscreen #top-actions,
         body.mobile-fullscreen #servo-controls {
             opacity: 0;
             pointer-events: none;
@@ -385,6 +440,18 @@
                 grid-template-columns: repeat(2, 50px);
                 grid-template-rows: 50px;
             }
+
+            #top-actions {
+                top: 12px;
+                right: 12px;
+                max-width: calc(100vw - 24px);
+            }
+
+            .top-action {
+                min-height: 40px;
+                padding: 0 10px;
+                font-size: 13px;
+            }
         }
     </style>
 </head>
@@ -392,12 +459,22 @@
 <body>
     <div id="video-container">
         <h1>{{ dog_name }} Stream</h1>
-        <div id="stream-status" hx-get="/stream_status" hx-trigger="load, every 2s" hx-swap="innerHTML">
+        <div id="stream-status" hx-get="{{ url_for('stream_status') }}" hx-trigger="load, every 2s" hx-swap="innerHTML">
             Checking status...
         </div>
-        <button id="settings-btn" title="Camera Settings" onclick="toggleServoModal()">⚙</button>
-
-        <button id="fullscreen-btn" title="Toggle Fullscreen">⛶</button>
+        <div id="top-actions" aria-label="Navigation">
+            {% if home_url %}
+            <a class="top-action" href="{{ home_url }}">Home</a>
+            {% endif %}
+            {% if auth_settings_url %}
+            <a class="top-action" href="{{ auth_settings_url }}">User settings</a>
+            {% endif %}
+            {% if logout_url %}
+            <a class="top-action" href="{{ logout_url }}">Logout</a>
+            {% endif %}
+            <button class="top-action" id="settings-btn" title="Camera Settings" onclick="toggleServoModal()">⚙</button>
+            <button class="top-action" id="fullscreen-btn" title="Toggle Fullscreen">⛶</button>
+        </div>
 
         {% if servo_available %}
         <div id="servo-controls-modal">
@@ -439,7 +516,7 @@
         </div>
         {% endif %}
 
-        <div id="temp" hx-get="/temp" hx-trigger="load, every 10s" hx-swap="innerHTML">
+        <div id="temp" hx-get="{{ url_for('temp') }}" hx-trigger="load, every 10s" hx-swap="innerHTML">
             Loading temperature...
         </div>
     </div>
@@ -448,6 +525,11 @@
         const fullscreenBtn = document.getElementById('fullscreen-btn');
         const container = document.body;
         const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+        const routes = {
+            servoMove: {{ url_for('servo_move')|tojson }},
+            servoPosition: {{ url_for('servo_position')|tojson }},
+            servoReset: {{ url_for('servo_reset')|tojson }}
+        };
         let mobileFullscreen = false;
 
         function isFullscreen() {
@@ -561,7 +643,7 @@
             state.pending = true;
 
             try {
-                const response = await fetch('/servo/move', {
+                const response = await fetch(routes.servoMove, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ axis, direction })
@@ -761,7 +843,7 @@
                 btn.style.opacity = '0.5';
                 btn.textContent = '⏳ Resetting';
 
-                const response = await fetch('/servo/reset', {
+                const response = await fetch(routes.servoReset, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' }
                 });
@@ -819,7 +901,7 @@
 
         async function loadServoState() {
             try {
-                const response = await fetch('/servo/position');
+                const response = await fetch(routes.servoPosition);
                 if (response.ok) {
                     const data = await response.json();
                     updateButtonStates(data);

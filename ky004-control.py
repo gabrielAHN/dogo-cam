@@ -16,6 +16,7 @@ STREAM_SVC = "dog-stream.service"
 CF_SVC = "cloudflared-tunnel.service"
 URL = "http://localhost:5000/login"
 LED_PATH = "/sys/class/leds/PWR"
+ENABLE_CLOUDFLARED = os.getenv("ENABLE_CLOUDFLARED", "1").lower() in {"1", "true", "yes", "on"}
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -133,8 +134,9 @@ def start():
 
     for i in range(60):
         if site_up():
-            log.info(f"Flask ready ({i}s), starting Cloudflare...")
-            run(["sudo", "systemctl", "start", CF_SVC])
+            if ENABLE_CLOUDFLARED:
+                log.info(f"Flask ready ({i}s), starting Cloudflare...")
+                run(["sudo", "systemctl", "start", CF_SVC])
             led_stop_flicker()
             led_on()
             log.info("Website live")
@@ -167,9 +169,11 @@ def stop():
     time.sleep(1)
 
     log.info("Camera stopped, stopping services...")
-    run(["sudo", "systemctl", "--no-block", "stop", CF_SVC], timeout=5)
+    if ENABLE_CLOUDFLARED:
+        run(["sudo", "systemctl", "--no-block", "stop", CF_SVC], timeout=5)
     run(["sudo", "systemctl", "--no-block", "stop", STREAM_SVC], timeout=5)
-    stop_service(CF_SVC)
+    if ENABLE_CLOUDFLARED:
+        stop_service(CF_SVC)
     stop_service(STREAM_SVC)
     reset_failed_services()
 
@@ -189,13 +193,15 @@ def active_or_stopping(name):
 
 def apply_state(state, force_led=False):
     if state == SWITCH_ON_VALUE:
-        if not site_up() or service_state(STREAM_SVC) != "active" or service_state(CF_SVC) != "active":
+        cf_ready = not ENABLE_CLOUDFLARED or service_state(CF_SVC) == "active"
+        if not site_up() or service_state(STREAM_SVC) != "active" or not cf_ready:
             start()
         elif force_led:
             led_on()
         return
 
-    if site_up() or active_or_stopping(STREAM_SVC) or active_or_stopping(CF_SVC):
+    cf_active = ENABLE_CLOUDFLARED and active_or_stopping(CF_SVC)
+    if site_up() or active_or_stopping(STREAM_SVC) or cf_active:
         stop()
     else:
         if force_led:
