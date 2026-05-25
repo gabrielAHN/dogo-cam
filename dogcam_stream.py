@@ -5,6 +5,7 @@ import threading
 import atexit
 import logging
 from datetime import timedelta
+from urllib.parse import urlsplit
 
 import adafruit_dht
 import board
@@ -108,6 +109,18 @@ def can_control_camera():
 
 def env_url(name, default=""):
     return os.getenv(name, default).strip()
+
+
+def is_local_logout_url(value):
+    parsed = urlsplit(value)
+    return not parsed.scheme and not parsed.netloc and parsed.path == url_for("logout")
+
+
+def logout_redirect_url():
+    configured_url = env_url("DOGCAM_LOGOUT_URL")
+    if configured_url and not is_local_logout_url(configured_url):
+        return configured_url
+    return env_url("DOGCAM_HOME_URL", url_for("index"))
 
 
 def camera_control_required(f):
@@ -221,6 +234,10 @@ atexit.register(cleanup)
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
+    next_page = request.args.get("next")
+    if request.method == "GET" and authelia_user():
+        return redirect(next_page or url_for("index"))
+
     error = None
 
     if request.method == "POST":
@@ -230,7 +247,6 @@ def login():
         if username == os.getenv("BASIC_AUTH_USERNAME") and password == os.getenv("BASIC_AUTH_PASSWORD"):
             session["logged_in"] = True
             session.permanent = True
-            next_page = request.args.get("next")
             if next_page:
                 return redirect(next_page)
             return redirect(url_for("index"))
@@ -242,6 +258,8 @@ def login():
 @app.route("/logout")
 def logout():
     session.clear()
+    if authelia_user():
+        return redirect(logout_redirect_url())
     return redirect(url_for("login"))
 
 
