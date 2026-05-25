@@ -19,11 +19,17 @@ logger = logging.getLogger(__name__)
 
 load_dotenv()
 
+
+def env_flag(name, default="0"):
+    return os.getenv(name, default).lower() in {"1", "true", "yes", "on"}
+
+
 app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY", os.urandom(24).hex())
 app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=1)
-if os.getenv("TRUST_PROXY_HEADERS", "0").lower() in {"1", "true", "yes", "on"}:
-    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
+if env_flag("TRUST_PROXY_HEADERS"):
+    proxy_prefix_count = 1 if env_flag("TRUST_PROXY_PREFIX_HEADERS") else 0
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=proxy_prefix_count)
 viewer_semaphore = threading.Semaphore(int(os.getenv("MAX_VIEWERS", 3)))
 
 camera = None
@@ -93,7 +99,7 @@ def env_set(name, default):
 
 
 def trust_proxy_auth_headers():
-    return os.getenv("TRUST_PROXY_AUTH_HEADERS", "0").lower() in {"1", "true", "yes", "on"}
+    return env_flag("TRUST_PROXY_AUTH_HEADERS")
 
 
 def is_authenticated():
