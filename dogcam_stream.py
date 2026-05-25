@@ -307,7 +307,7 @@ def index():
         dog_name=dog_name,
         camera_available=camera_available,
         servo_available=servo_available and can_control_camera(),
-        home_url=url_for("index"),
+        home_url=env_url("DOGCAM_HOME_URL", "/"),
         auth_settings_url=env_url("DOGCAM_AUTH_SETTINGS_URL"),
         logout_url=url_for("logout"),
         camera_view=camera_view(),
