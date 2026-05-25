@@ -265,6 +265,6 @@ sudo systemctl restart dog-stream.service
 ## Notes
 
 - `.env` should stay only on the Pi or your local machine.
-- Use `DOGCAM_CAMERA_VIEW=upside_down` when the camera is mounted inverted. The video feed and on-screen arrow controls follow the configured view. If unset or `normal`, no camera transform is applied.
+- Use `DOGCAM_CAMERA_VIEW=upside_down` when the camera is mounted inverted. If unset or `normal`, no camera transform is applied. Arrow controls always send the matching servo direction.
 - Increase `SERVO_STEP_SIZE` for faster jumps, lower it for finer control. Lower `SERVO_SETTLE_SECONDS` only if the servos hold position reliably.
 - Servo positions are persisted in `/tmp/servo_positions.json`.

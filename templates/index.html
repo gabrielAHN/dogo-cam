@@ -530,7 +530,6 @@
             servoPosition: {{ url_for('servo_position')|tojson }},
             servoReset: {{ url_for('servo_reset')|tojson }}
         };
-        const cameraView = {{ camera_view|tojson }};
         let mobileFullscreen = false;
 
         function isFullscreen() {
@@ -630,17 +629,10 @@
         {% if servo_available %}
 
         const MOVE_THROTTLE_MS = 50;
-        const directionMap = cameraView === 'upside_down'
-            ? { up: 'down', down: 'up', left: 'right', right: 'left' }
-            : { up: 'up', down: 'down', left: 'left', right: 'right' };
         const moveState = {
             servo1: { last: 0, pending: false },
             servo2: { last: 0, pending: false }
         };
-
-        function mappedDirection(direction) {
-            return directionMap[direction] || direction;
-        }
 
         async function moveServo(axis, direction, force = false) {
             const now = Date.now();
@@ -654,7 +646,7 @@
                 const response = await fetch(routes.servoMove, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ axis, direction: mappedDirection(direction) })
+                    body: JSON.stringify({ axis, direction })
                 });
 
                 if (response.ok) {
@@ -886,10 +878,9 @@
             ];
 
             buttons.forEach(({ id, axis, direction }) => {
-                const mapped = mappedDirection(direction);
                 const key = axis === 'servo1'
-                    ? `can_servo1_${mapped}`
-                    : `can_servo2_${mapped}`;
+                    ? `can_servo1_${direction}`
+                    : `can_servo2_${direction}`;
                 if (data[key] !== undefined) {
                     document.getElementById(id).disabled = !data[key];
                 }
