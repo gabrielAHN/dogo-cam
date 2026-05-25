@@ -111,6 +111,16 @@ def env_url(name, default=""):
     return os.getenv(name, default).strip()
 
 
+def camera_view():
+    value = os.getenv("DOGCAM_CAMERA_VIEW", "normal").strip().lower().replace("-", "_")
+    if value in {"", "normal"}:
+        return "normal"
+    if value in {"upside_down", "inverted", "rotated_180", "180"}:
+        return "upside_down"
+    logger.warning(f"Unsupported DOGCAM_CAMERA_VIEW={value!r}; using normal")
+    return "normal"
+
+
 def is_local_logout_url(value):
     parsed = urlsplit(value)
     return not parsed.scheme and not parsed.netloc and parsed.path == url_for("logout")
@@ -155,15 +165,16 @@ def init_camera():
             raise RuntimeError("No cameras detected by Picamera2")
         logger.info(f"Detected cameras: {camera_info}")
         camera = Picamera2(0)
+        view = camera_view()
         config = camera.create_video_configuration(
             main={"size": (640, 480)},
-            transform=Transform(hflip=True, vflip=True),
+            transform=Transform(hflip=view == "upside_down", vflip=view == "upside_down"),
         )
         camera.configure(config)
         camera.start_recording(JpegEncoder(), FileOutput(output))
         camera_available = True
         camera_running = True
-        logger.info("Camera initialized successfully")
+        logger.info(f"Camera initialized successfully with {view} view")
         return True
     except Exception as e:
         logger.error(f"Camera initialization failed: {e}")
@@ -287,6 +298,7 @@ def index():
         home_url=env_url("DOGCAM_HOME_URL", "/"),
         auth_settings_url=env_url("DOGCAM_AUTH_SETTINGS_URL"),
         logout_url=env_url("DOGCAM_LOGOUT_URL", url_for("logout")),
+        camera_view=camera_view(),
     )
 
 

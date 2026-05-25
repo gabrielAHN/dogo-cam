@@ -104,6 +104,7 @@ SECRET_KEY=replace_me
 MAX_VIEWERS=3
 PORT=5000
 DOG_NAME=Kotaro
+DOGCAM_CAMERA_VIEW=normal
 SWITCH_PIN=17
 SWITCH_ON_VALUE=0
 SWITCH_LOG_INTERVAL=10
@@ -264,6 +265,6 @@ sudo systemctl restart dog-stream.service
 ## Notes
 
 - `.env` should stay only on the Pi or your local machine.
+- Use `DOGCAM_CAMERA_VIEW=upside_down` when the camera is mounted inverted. The video feed and on-screen arrow controls follow the configured view. If unset or `normal`, no camera transform is applied.
 - Increase `SERVO_STEP_SIZE` for faster jumps, lower it for finer control. Lower `SERVO_SETTLE_SECONDS` only if the servos hold position reliably.
 - Servo positions are persisted in `/tmp/servo_positions.json`.
-- The camera stream is flipped because the camera mount is inverted.
