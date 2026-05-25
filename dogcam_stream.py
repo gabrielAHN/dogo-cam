@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 import adafruit_dht
 import board
 from dotenv import load_dotenv
-from flask import Flask, Response, jsonify, redirect, render_template, request, session, url_for
+from flask import Flask, Response, abort, jsonify, redirect, render_template, request, session, url_for
 from functools import wraps
 from werkzeug.middleware.proxy_fix import ProxyFix
 
@@ -123,14 +123,16 @@ def camera_view():
 
 def is_local_logout_url(value):
     parsed = urlsplit(value)
-    return not parsed.scheme and not parsed.netloc and parsed.path == url_for("logout")
+    if parsed.path != url_for("logout"):
+        return False
+    return not parsed.scheme and not parsed.netloc
 
 
 def logout_redirect_url():
     configured_url = env_url("DOGCAM_LOGOUT_URL")
     if configured_url and not is_local_logout_url(configured_url):
         return configured_url
-    return env_url("DOGCAM_HOME_URL", url_for("index"))
+    return url_for("index")
 
 
 def camera_control_required(f):
@@ -268,8 +270,12 @@ def login():
 
 @app.route("/logout")
 def logout():
+    has_authelia_user = bool(authelia_user())
+    has_local_session = bool(session.get("logged_in"))
+    if not has_authelia_user and not has_local_session:
+        abort(403)
     session.clear()
-    if authelia_user():
+    if has_authelia_user:
         return redirect(logout_redirect_url())
     return redirect(url_for("login"))
 
@@ -295,9 +301,9 @@ def index():
         dog_name=dog_name,
         camera_available=camera_available,
         servo_available=servo_available and can_control_camera(),
-        home_url=env_url("DOGCAM_HOME_URL", "/"),
+        home_url=url_for("index"),
         auth_settings_url=env_url("DOGCAM_AUTH_SETTINGS_URL"),
-        logout_url=env_url("DOGCAM_LOGOUT_URL", url_for("logout")),
+        logout_url=url_for("logout"),
         camera_view=camera_view(),
     )
 
