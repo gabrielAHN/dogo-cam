@@ -116,6 +116,7 @@ ENABLE_CLOUDFLARED=1
 CLOUDFLARED_CONFIG=/home/your-user/.cloudflared/config.yml
 CLOUDFLARED_TUNNEL=dog-stream-tunnel
 TRUST_PROXY_HEADERS=0
+TRUST_PROXY_PREFIX_HEADERS=0
 TRUST_PROXY_AUTH_HEADERS=0
 DOGCAM_CONTROL_GROUPS=admin,admins,dogo_operators
 DOGCAM_AUTH_SETTINGS_URL=
@@ -124,7 +125,7 @@ DOGCAM_LOGOUT_URL=
 
 `ENABLE_CLOUDFLARED=1` is for standalone Raspberry Pi tunnel mode. Use `ENABLE_CLOUDFLARED=0` when another host, such as a Mac mini running Traefik, Authelia, and Cloudflare, owns the public domain and proxies to the Pi over local networking.
 
-When the app is behind a trusted reverse proxy, set `TRUST_PROXY_HEADERS=1` so generated UI routes honor forwarded host, protocol, and prefix headers. If that proxy is Authelia, set `TRUST_PROXY_AUTH_HEADERS=1` so requests with a `Remote-User` header are treated as authenticated. Camera movement is allowed only for users in `DOGCAM_CONTROL_GROUPS`; other authenticated users can view the stream without servo controls. The Home button always returns to the app root at `/`, and the Logout button always goes through the local `/logout` route. For Authelia proxy mode, set `DOGCAM_LOGOUT_URL` to the external Authelia logout URL, such as `https://auth.example.com/logout`, so `/logout` clears the app session and then logs the user out of Authelia. Direct unauthenticated access to `/logout` is rejected. Keep both proxy trust flags at `0` for standalone Raspberry Pi mode unless a trusted reverse proxy strips incoming auth headers and sets its own.
+When the app is behind a trusted reverse proxy, set `TRUST_PROXY_HEADERS=1` so generated UI routes honor forwarded host and protocol headers. If the app is intentionally served under a URL path prefix, also set `TRUST_PROXY_PREFIX_HEADERS=1`; leave it at `0` for domain-root proxying such as `https://dogo.example.com/`. If that proxy is Authelia, set `TRUST_PROXY_AUTH_HEADERS=1` so requests with a `Remote-User` header are treated as authenticated. Camera movement is allowed only for users in `DOGCAM_CONTROL_GROUPS`; other authenticated users can view the stream without servo controls. The Home button always returns to the app root at `/`, and the Logout button always goes through the local `/logout` route. For Authelia proxy mode, set `DOGCAM_LOGOUT_URL` to the external Authelia logout URL, such as `https://auth.example.com/logout`, so `/logout` clears the app session and then logs the user out of Authelia. Direct unauthenticated access to `/logout` is rejected. Keep all proxy trust flags at `0` for standalone Raspberry Pi mode unless a trusted reverse proxy strips incoming auth headers and sets its own.
 
 ## Raspberry Pi Setup
 
@@ -241,6 +242,7 @@ On the Raspberry Pi:
 ```env
 ENABLE_CLOUDFLARED=0
 TRUST_PROXY_HEADERS=1
+TRUST_PROXY_PREFIX_HEADERS=0
 TRUST_PROXY_AUTH_HEADERS=1
 DOGCAM_CONTROL_GROUPS=admin,admins,dogo_operators
 DOGCAM_AUTH_SETTINGS_URL=https://auth.your-domain.example/settings
