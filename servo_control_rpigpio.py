@@ -9,13 +9,15 @@ import RPi.GPIO as GPIO
 
 logger = logging.getLogger(__name__)
 
-SERVO1_PIN = 18
-SERVO2_PIN = 19
-PWM_FREQUENCY = 50
-STEP_SIZE = 8
-SERVO1_MIN_TILT = 90
-MIN_DUTY = 2.0
-MAX_DUTY = 12.0
+SERVO1_PIN = int(os.getenv("SERVO1_PIN", "18"))
+SERVO2_PIN = int(os.getenv("SERVO2_PIN", "19"))
+PWM_FREQUENCY = int(os.getenv("SERVO_PWM_FREQUENCY", "50"))
+STEP_SIZE = int(os.getenv("SERVO_STEP_SIZE", "10"))
+SERVO1_MIN_TILT = int(os.getenv("SERVO1_MIN_TILT", "90"))
+MIN_DUTY = float(os.getenv("SERVO_MIN_DUTY", "2.0"))
+MAX_DUTY = float(os.getenv("SERVO_MAX_DUTY", "12.0"))
+SERVO_SETTLE_SECONDS = float(os.getenv("SERVO_SETTLE_SECONDS", "0.25"))
+MIN_MOVEMENT_INTERVAL = float(os.getenv("SERVO_MIN_MOVEMENT_INTERVAL", "0.01"))
 STATE_FILE = "/tmp/servo_positions.json"
 
 
@@ -27,9 +29,10 @@ class ServoController:
         self.initialized = False
         self.pwm1 = None
         self.pwm2 = None
+        self.stop_timers = {}
         self.last_servo1_time = 0
         self.last_servo2_time = 0
-        self.min_movement_interval = 0.02
+        self.min_movement_interval = MIN_MOVEMENT_INTERVAL
 
     def angle_to_duty_cycle(self, angle):
         return MIN_DUTY + (angle / 180.0) * (MAX_DUTY - MIN_DUTY)
@@ -77,13 +80,24 @@ class ServoController:
                 logger.error(f"Error initializing servos: {e}")
                 return False
 
-    def _set_servo_position(self, pwm, angle, servo_name):
+    def _stop_pwm(self, servo):
+        with self.lock:
+            pwm = self.pwm1 if servo == 1 else self.pwm2
+            if pwm:
+                pwm.ChangeDutyCycle(0)
+                logger.debug(f"Servo{servo} PWM stopped")
+
+    def _set_servo_position(self, servo, pwm, angle, servo_name):
         duty = self.angle_to_duty_cycle(angle)
         pwm.ChangeDutyCycle(duty)
-        logger.info(f"{servo_name} set to {angle}° (duty: {duty:.2f}%)")
-        time.sleep(0.03)
-        pwm.ChangeDutyCycle(0)
-        logger.info(f"{servo_name} PWM stopped - position locked")
+        logger.debug(f"{servo_name} set to {angle}° (duty: {duty:.2f}%)")
+        timer = self.stop_timers.pop(servo, None)
+        if timer:
+            timer.cancel()
+        timer = threading.Timer(SERVO_SETTLE_SECONDS, self._stop_pwm, args=(servo,))
+        timer.daemon = True
+        self.stop_timers[servo] = timer
+        timer.start()
 
     def _move(self, servo, direction):
         if not self.initialized and not self.initialize():
@@ -105,8 +119,8 @@ class ServoController:
                 return False, self.servo1_angle, self.servo1_angle < 180, self.servo1_angle > SERVO1_MIN_TILT
 
             if new_angle != old_angle:
-                logger.info(f"Servo1 {direction}: {old_angle}° → {new_angle}°")
-                self._set_servo_position(self.pwm1, new_angle, "Servo1")
+                logger.debug(f"Servo1 {direction}: {old_angle}° → {new_angle}°")
+                self._set_servo_position(1, self.pwm1, new_angle, "Servo1")
                 self.servo1_angle = new_angle
                 self.last_servo1_time = time.time()
                 self.save_positions()
@@ -122,8 +136,8 @@ class ServoController:
             return False, self.servo2_angle, self.servo2_angle > 0, self.servo2_angle < 180
 
         if new_angle != old_angle:
-            logger.info(f"Servo2 {direction}: {old_angle}° → {new_angle}°")
-            self._set_servo_position(self.pwm2, new_angle, "Servo2")
+            logger.debug(f"Servo2 {direction}: {old_angle}° → {new_angle}°")
+            self._set_servo_position(2, self.pwm2, new_angle, "Servo2")
             self.servo2_angle = new_angle
             self.last_servo2_time = time.time()
             self.save_positions()
@@ -144,9 +158,9 @@ class ServoController:
                 return False
 
             logger.info(f"Resetting servos: Servo1={self.servo1_angle}° → 90°, Servo2={self.servo2_angle}° → 90°")
-            self._set_servo_position(self.pwm1, 90, "Servo1")
+            self._set_servo_position(1, self.pwm1, 90, "Servo1")
             time.sleep(0.2)
-            self._set_servo_position(self.pwm2, 90, "Servo2")
+            self._set_servo_position(2, self.pwm2, 90, "Servo2")
 
             self.servo1_angle = 90
             self.servo2_angle = 90
@@ -179,6 +193,9 @@ class ServoController:
 
             try:
                 self.save_positions()
+                for timer in self.stop_timers.values():
+                    timer.cancel()
+                self.stop_timers.clear()
                 if self.pwm1:
                     self.pwm1.stop()
                 if self.pwm2:

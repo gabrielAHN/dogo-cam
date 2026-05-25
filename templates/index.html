@@ -530,6 +530,7 @@
             servoPosition: {{ url_for('servo_position')|tojson }},
             servoReset: {{ url_for('servo_reset')|tojson }}
         };
+        const cameraView = {{ camera_view|tojson }};
         let mobileFullscreen = false;
 
         function isFullscreen() {
@@ -628,11 +629,18 @@
 
         {% if servo_available %}
 
-        const MOVE_THROTTLE_MS = 75;
+        const MOVE_THROTTLE_MS = 50;
+        const directionMap = cameraView === 'upside_down'
+            ? { up: 'down', down: 'up', left: 'right', right: 'left' }
+            : { up: 'up', down: 'down', left: 'left', right: 'right' };
         const moveState = {
             servo1: { last: 0, pending: false },
             servo2: { last: 0, pending: false }
         };
+
+        function mappedDirection(direction) {
+            return directionMap[direction] || direction;
+        }
 
         async function moveServo(axis, direction, force = false) {
             const now = Date.now();
@@ -646,7 +654,7 @@
                 const response = await fetch(routes.servoMove, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ axis, direction })
+                    body: JSON.stringify({ axis, direction: mappedDirection(direction) })
                 });
 
                 if (response.ok) {
@@ -870,19 +878,22 @@
         }
 
         function updateButtonStates(data) {
-            if (data.can_servo1_up !== undefined) {
-                document.getElementById('btn-up').disabled = !data.can_servo1_up;
-            }
-            if (data.can_servo1_down !== undefined) {
-                document.getElementById('btn-down').disabled = !data.can_servo1_down;
-            }
+            const buttons = [
+                { id: 'btn-up', axis: 'servo1', direction: 'up' },
+                { id: 'btn-down', axis: 'servo1', direction: 'down' },
+                { id: 'btn-left', axis: 'servo2', direction: 'left' },
+                { id: 'btn-right', axis: 'servo2', direction: 'right' }
+            ];
 
-            if (data.can_servo2_left !== undefined) {
-                document.getElementById('btn-left').disabled = !data.can_servo2_left;
-            }
-            if (data.can_servo2_right !== undefined) {
-                document.getElementById('btn-right').disabled = !data.can_servo2_right;
-            }
+            buttons.forEach(({ id, axis, direction }) => {
+                const mapped = mappedDirection(direction);
+                const key = axis === 'servo1'
+                    ? `can_servo1_${mapped}`
+                    : `can_servo2_${mapped}`;
+                if (data[key] !== undefined) {
+                    document.getElementById(id).disabled = !data[key];
+                }
+            });
 
             if (data.servo1 !== undefined) {
                 const modalDisplay = document.getElementById('servo1-angle');
