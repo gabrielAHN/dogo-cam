@@ -6,6 +6,8 @@ import atexit
 import logging
 from datetime import timedelta
 from urllib.parse import urlsplit
+import json
+import urllib.request
 
 import adafruit_dht
 import board
@@ -45,6 +47,12 @@ cached_humidity = None
 
 STREAM_STATE_FILE = "/tmp/stream_enabled"
 SHUTDOWN_STATE_FILE = "/tmp/shutdown_pending"
+
+TEMP_SOURCE = os.environ.get("TEMP_SOURCE", "sensor").strip().lower()
+HA_URL = os.environ.get("HA_URL", "").strip()
+HA_TOKEN = os.environ.get("HA_TOKEN", "").strip()
+HA_TEMP_ENTITY = os.environ.get("HA_TEMP_ENTITY", "sensor.casa_sensor_temperature")
+HA_HUMIDITY_ENTITY = os.environ.get("HA_HUMIDITY_ENTITY", "sensor.casa_sensor_humidity")
 
 try:
     from servo_control_rpigpio import servo_controller
@@ -329,6 +337,42 @@ def video_feed():
         viewer_semaphore.release()
 
 
+def read_ha_entity(entity_id):
+    """Read a single entity state from Home Assistant."""
+    url = f"{HA_URL}/api/states/{entity_id}"
+    req = urllib.request.Request(url, headers={
+        "Authorization": f"Bearer {HA_TOKEN}",
+        "Content-Type": "application/json",
+    })
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        data = json.loads(resp.read())
+        return float(data["state"])
+
+
+def read_temp_from_ha():
+    """Read temperature and humidity from Home Assistant."""
+    global cached_temp, cached_humidity, last_dht_read
+    current_time = time.time()
+
+    if current_time - last_dht_read < 10.0 and cached_temp is not None:
+        temp_f = cached_temp * 9 / 5 + 32
+        return f"Room Temp: {cached_temp:.2f}\u00b0C ({temp_f:.2f}\u00b0F) | Humidity: {cached_humidity:.1f}%"
+
+    try:
+        temperature = read_ha_entity(HA_TEMP_ENTITY)
+        humidity = read_ha_entity(HA_HUMIDITY_ENTITY)
+        cached_temp = temperature
+        cached_humidity = humidity
+        last_dht_read = current_time
+        temp_f = temperature * 9 / 5 + 32
+        return f"Room Temp: {temperature:.2f}\u00b0C ({temp_f:.2f}\u00b0F) | Humidity: {humidity:.1f}%"
+    except Exception as e:
+        if cached_temp is not None:
+            temp_f = cached_temp * 9 / 5 + 32
+            return f"Room Temp: {cached_temp:.2f}\u00b0C ({temp_f:.2f}\u00b0F) | Humidity: {cached_humidity:.1f}% (cached)"
+        return f"HA Error: {e}"
+
+
 def init_dht_sensor():
     global dht_device
 
@@ -343,6 +387,9 @@ def temp():
     global last_dht_read
     global cached_temp
     global cached_humidity
+
+    if TEMP_SOURCE == "ha":
+        return read_temp_from_ha()
 
     current_time = time.time()
 
