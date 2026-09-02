@@ -1,0 +1,10 @@
+[Unit]
+Description=Run dogcam stream watchdog every 30s
+
+[Timer]
+OnBootSec=90
+OnUnitActiveSec=30
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target
