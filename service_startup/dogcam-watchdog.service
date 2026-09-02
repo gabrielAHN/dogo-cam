@@ -1,0 +1,8 @@
+[Unit]
+Description=Dogcam stream watchdog (restart dog-stream if unresponsive)
+After=dog-stream.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/home/your-user/dogo-cam/.env
+ExecStart=/home/your-user/dogo-cam/dogcam-watchdog.sh
