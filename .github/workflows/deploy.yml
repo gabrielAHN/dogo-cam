@@ -1,0 +1,26 @@
+name: Deploy to dogo-cam Pi
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-pi
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, macmini]
+    steps:
+      - name: Pull latest on the Pi and restart (over Nebula)
+        run: |
+          ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 \
+              -i ~/.ssh/id_ed25519 hidalgo-cam@192.168.100.10 '
+            set -e
+            cd ~/dogo-cam
+            git fetch --all --quiet
+            git reset --hard origin/main
+            sudo systemctl restart dog-stream
+            echo "deployed $(git rev-parse --short HEAD)"
+          '
