@@ -1,0 +1,6 @@
+# Scoped sudoers for the auto-deploy. Install to /etc/sudoers.d/dogcam-deploy
+# (chmod 0440), then validate with:  sudo visudo -cf /etc/sudoers.d/dogcam-deploy
+#
+# Grants ONLY the one command the deploy needs, so the deploy path never
+# requires broad sudo. Replace "your-user" with the Pi's service user.
+your-user ALL=(root) NOPASSWD: /usr/bin/systemctl restart dog-stream

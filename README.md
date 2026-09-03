@@ -103,6 +103,9 @@ BASIC_AUTH_PASSWORD=your_password
 SECRET_KEY=replace_me
 MAX_VIEWERS=3
 PORT=5000
+# Camera stream framerate cap. Lower = less CPU/camera current draw, which keeps
+# a Pi 3B from browning out under load (see "Power And Stability"). Default 15.
+STREAM_MAX_FPS=15
 DOG_NAME=Kotaro
 DOGCAM_CAMERA_VIEW=normal
 SWITCH_PIN=17
@@ -287,14 +290,84 @@ Run only the Flask app and switch controller on the Pi. Configure your reverse p
 
 ## Deploying Updates To The Pi
 
-On the Pi:
+### Manual
 
 ```bash
 cd ~/dogo-cam
 git pull
-uv sync
+uv sync            # only if dependencies changed
 sudo systemctl restart dog-stream.service
 ```
+
+### Automated (push to deploy)
+
+A GitHub Actions **self-hosted runner** (run it on an always-on box you trust,
+e.g. a mac mini on the same network) deploys on every push to `main` via
+`.github/workflows/deploy.yml`. The runner holds an *outbound* connection to
+GitHub, so it works even when the Pi is behind NAT / on an isolated network — no
+inbound webhook needed. On a push it SSHes to the Pi and runs a fixed deploy
+script; trigger it manually from the Actions tab or with `gh workflow run
+deploy.yml`.
+
+Because this is a **public repo**, the deploy path is locked down so the runner
+can do nothing on the Pi except deploy:
+
+- The runner authenticates with a **dedicated, command-locked SSH key** — its
+  `authorized_keys` forced command is `dogcam-deploy.sh`, so the key ignores any
+  other command. Install the artifacts from `deploy/`:
+  ```bash
+  sudo install -m0755 deploy/dogcam-deploy.sh /usr/local/bin/dogcam-deploy.sh
+  sudo install -m0440 deploy/dogcam-deploy.sudoers /etc/sudoers.d/dogcam-deploy
+  # then add the forced-command line (see dogcam-deploy.sh header) for the
+  # deploy key to the service user's ~/.ssh/authorized_keys
+  ```
+- Repo settings: require approval for **all external contributors** before any
+  fork PR runs on the runner, restrict allowed actions to GitHub-owned, and the
+  workflow uses `permissions: {}` and only triggers on push to `main` /
+  `workflow_dispatch`. See "Security Hardening".
+
+## Power And Stability
+
+A Pi 3B funnels all current through its micro-USB / input polyfuse (~2-2.5A), so
+the camera + MJPEG encoding + servos can spike the 5V rail into brown-out
+(under-voltage) even with a strong supply — the camera then stalls or the app
+hangs. Mitigations:
+
+- **`STREAM_MAX_FPS`** (default 15) caps the framerate to cut the peak draw — the
+  single most effective knob. Lower it further if `vcgencmd get_throttled`
+  returns non-zero under load.
+- The app runs **single-shot autofocus** at startup (imx708) instead of
+  continuous hunting, saving the AF motor's draw and the PDAF log spam.
+- The real fix is more headroom: power the servos from a **separate 5V supply**
+  (common ground) or move to a Pi 4/5.
+
+### Self-healing
+
+- `dogcam-watchdog.timer` restarts `dog-stream` if the app stops responding on
+  `:5000` (the single gunicorn worker can deadlock when the camera pipeline
+  stalls).
+- `dog-stream.service` sets `TimeoutStopSec=15` + `KillMode=mixed` so a hung
+  camera cleanup can't wedge the service in `deactivating`; systemd force-kills
+  it so the restart actually completes.
+- If the feed is blank but `camera_status` says available, suspect the **CSI
+  ribbon cable** — reseat both ends (a loose cable gives "Camera frontend has
+  timed out" and zero frames while the sensor still enumerates on I2C).
+
+## Security Hardening
+
+Especially important because this is a public repo with a self-hosted deploy
+runner:
+
+- **SSH is key-only** (`PasswordAuthentication no`, `PermitRootLogin no`).
+- **Minimal `authorized_keys`**: an admin key plus the command-locked deploy key
+  only.
+- **Firewall `:5000`** to the reverse-proxy / tunnel host and localhost, and drop
+  everything else — the stream port is otherwise reachable on the LAN.
+- **Disable services you don't use.** Some Pi images ship Samba enabled on
+  `139/445`; disable it so the listening surface stays `:22` + `:5000`.
+- **Scoped deploy sudo** (`deploy/dogcam-deploy.sudoers`) grants only
+  `systemctl restart dog-stream`, not broad sudo. Prefer not to give the service
+  user `NOPASSWD: ALL` — a deployed commit runs as that user.
 
 ## Notes
 
