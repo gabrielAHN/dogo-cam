@@ -1,377 +1,126 @@
 # Dogo Cam
 
-Manual Raspberry Pi dog camera with:
+Manual Raspberry Pi dog camera: Flask web UI, live Picamera2 stream, pan/tilt MG90S servos (keyboard, on‑screen arrows, mobile touch‑drag), temperature/humidity readout (local DHT22 or Home Assistant), and optional Cloudflare Tunnel. Manual‑only (tracking removed).
 
-- Flask web UI
-- live Picamera2 stream
-- pan and tilt servo controls
-- keyboard and on-screen arrow controls
-- touch drag controls on mobile
-- temperature and humidity readout (local DHT22 sensor or Home Assistant)
-- optional Cloudflare Tunnel exposure
+![Dog stream UI](img/dog-stream.png)
 
-Tracking has been removed. The current app is manual-only.
+## Layout
 
-## Project Layout
-
-- `dogcam_stream.py`: Flask app and camera endpoints
-- `servo_control_rpigpio.py`: MG90S pan and tilt servo control
-- `templates/index.html`: main camera UI
-- `templates/login.html`: login screen
-- `ky004-control.py`: optional GPIO button power control
-- `service_startup/`: example systemd unit files
-- `PIN_DIAGRAM.md`: wiring reference
+- `dogcam_stream.py` — Flask app + camera endpoints
+- `servo_control_rpigpio.py` — MG90S pan/tilt control
+- `ky004-control.py` — optional GPIO on/off switch
+- `templates/` — camera UI + login
+- `service_startup/` — example systemd units
+- `deploy/` — CI deploy script + scoped sudoers
+- `PIN_DIAGRAM.md` — full wiring reference
 
 ## Hardware
 
-- Raspberry Pi with Raspberry Pi OS
-- CSI camera module
-- 2 MG90S servos for pan and tilt
-- GPIO toggle switch for turning the site stack on and off
-- optional DHT22 sensor on `GPIO4`
-- optional Cloudflare Tunnel
+Raspberry Pi (Pi OS) + CSI camera + 2× MG90S servos, plus optional GPIO toggle switch, DHT22 (`GPIO4`), and cooling fan.
 
-See `PIN_DIAGRAM.md` for wiring.
+![Raspberry Pi camera build](img/raspberry-pi-cam.png)
 
-### Raspberry Pi Wiring
+| Part | Signal / V+ / GND pins | Notes |
+|------|------------------------|-------|
+| CSI camera | ribbon → CSI port | dedicated camera port, not GPIO |
+| Tilt servo (servo1) | `GPIO18` (Pin 12) / Pin 2 (5V) / Pin 14 | |
+| Pan servo (servo2) | `GPIO19` (Pin 35) / Pin 4 (5V) / Pin 39 | |
+| Toggle switch | `GPIO17` (Pin 11) / Pin 17 (3.3V) / Pin 25 | 3‑pin module |
+| DHT22 (optional) | `GPIO4` (Pin 7) / Pin 1 (3.3V) / Pin 9 | |
+| Cooling fan | Pin 4 (5V, split with pan) / Pin 6 | |
 
-| Part | Signal Pin | Raspberry Pi Pin | Notes |
-|------|------------|------------------|-------|
-| CSI camera | Ribbon cable | CSI camera connector | Uses the dedicated camera port, not GPIO |
-| Tilt servo | Signal | `GPIO18` / physical `Pin 12` | Servo 1 in the app |
-| Tilt servo | V+ | physical `Pin 2` (`5V`) | Servo 1 power from Raspberry Pi |
-| Tilt servo | GND | physical `Pin 14` | Shared ground for tilt servo |
-| Pan servo | Signal | `GPIO19` / physical `Pin 35` | Servo 2 in the app |
-| Pan servo | V+ | physical `Pin 4` (`5V`) | Servo 2 power from Raspberry Pi |
-| Pan servo | GND | physical `Pin 39` | Shared ground for pan servo |
-| Toggle switch | Signal | `GPIO17` / physical `Pin 11` | 3-pin switch module signal |
-| Toggle switch | VCC | physical `Pin 17` (`3.3V`) | Use `3.3V` for GPIO-safe switching |
-| Toggle switch | GND | physical `Pin 25` | Module ground |
-| DHT22 VCC | Power | physical `Pin 1` (`3.3V`) | Optional sensor power |
-| DHT22 data | Data | `GPIO4` / physical `Pin 7` | Optional sensor |
-| DHT22 GND | Ground | physical `Pin 9` | Optional sensor ground |
-| Cooling fan | Power | physical `Pin 4` (`5V`) split with pan servo power | Always-on Pi cooling fan |
-| Cooling fan | Ground | physical `Pin 6` | Ground from Raspberry Pi |
+Servos and fan draw from the Pi 5V rail with shared ground. The mount is inverted, so the stream is flipped in software (`DOGCAM_CAMERA_VIEW=upside_down`). See `PIN_DIAGRAM.md` for the full pinout.
 
-### Servo Power Notes
+**Switch** (`ky004-control.py`): ON (`GPIO17` low) starts `dog-stream` (and `cloudflared-tunnel` if enabled); OFF stops them cleanly. Set `SWITCH_ON_VALUE=1` if your module is inverted, or `SWITCH_PIN` for a different GPIO.
 
-- Both servos are wired directly to the Raspberry Pi `5V` header pins in this wiring map.
-- The cooling fan is also wired to the Raspberry Pi by splitting `Pin 4` (`5V`) with the pan servo power lead.
-- Share ground between all servos, the fan, and the Raspberry Pi.
-- The app maps `servo1` to tilt on `GPIO18` and `servo2` to pan on `GPIO19`.
-- The camera mount is inverted, so the stream is flipped in software.
-- If you add a two-wire fan, wire it to `Pin 4` and `Pin 6`, or to `Pin 1` and ground if it is a `3.3V` fan.
+## Controls
 
-### Switch Behavior
-
-The deployed Raspberry Pi uses a simple on/off switch on `GPIO17`, monitored by `ky004-control.py`.
-
-- switch ON, `GPIO17` reads low:
-  - start `dog-stream.service`
-  - wait for the Flask app to respond
-  - start `cloudflared-tunnel.service`
-- switch OFF, `GPIO17` reads high:
-  - signal the Flask app to stop the camera cleanly
-  - stop the Cloudflare tunnel
-  - stop the Flask app
-
-If your switch module reports the opposite value, set `SWITCH_ON_VALUE=1` in the environment used by `button-control.service`. If the signal is on a different GPIO, set `SWITCH_PIN` to that BCM GPIO number. The switch controller continuously reconciles the services with the current GPIO state so missed transitions or manual service changes are corrected.
-
-## Manual Controls
-
-- Desktop:
-  - click and hold the arrow buttons
-  - use `↑ ↓ ← →`
-  - use `W A S D`
-- Mobile:
-  - tap or hold above/below center for tilt
-  - tap or hold left/right of center for pan
+- Desktop: arrow buttons, `↑ ↓ ← →`, or `W A S D`
+- Mobile: tap/hold above/below center (tilt) or left/right (pan)
 
 ## Environment
 
-Create a local `.env` in the project root on the Raspberry Pi. Do not commit it.
-
-Start from `.env.example`:
-
-```bash
-cp .env.example .env
-```
+Copy `.env.example` to `.env` on the Pi (never commit it). The most relevant settings:
 
 ```env
-BASIC_AUTH_USERNAME=your_username
-BASIC_AUTH_PASSWORD=your_password
 SECRET_KEY=replace_me
 MAX_VIEWERS=3
 PORT=5000
-# Camera stream framerate cap. Lower = less CPU/camera current draw, which keeps
-# a Pi 3B from browning out under load (see "Power And Stability"). Default 15.
-STREAM_MAX_FPS=15
+STREAM_MAX_FPS=15          # framerate cap; lower = less power draw (see Power & stability)
 DOG_NAME=Kotaro
-DOGCAM_CAMERA_VIEW=normal
+DOGCAM_CAMERA_VIEW=normal  # or upside_down
 SWITCH_PIN=17
 SWITCH_ON_VALUE=0
-SWITCH_LOG_INTERVAL=10
-SWITCH_RECONCILE_INTERVAL=5
-SERVO_STEP_SIZE=10
-SERVO_SETTLE_SECONDS=0.25
-SERVO_MIN_MOVEMENT_INTERVAL=0.01
-ENABLE_CLOUDFLARED=1
-TEMP_SOURCE=sensor
-HA_URL=http://your-ha-host:8123
-HA_TOKEN=
-HA_TEMP_ENTITY=sensor.your_temperature_entity
-HA_HUMIDITY_ENTITY=sensor.your_humidity_entity
-CLOUDFLARED_CONFIG=/home/your-user/.cloudflared/config.yml
-CLOUDFLARED_TUNNEL=dog-stream-tunnel
-TRUST_PROXY_HEADERS=0
-TRUST_PROXY_PREFIX_HEADERS=0
-TRUST_PROXY_AUTH_HEADERS=0
-DOGCAM_CONTROL_GROUPS=admin,admins,dogo_operators
-DOGCAM_HOME_URL=/
-DOGCAM_AUTH_SETTINGS_URL=
-DOGCAM_LOGOUT_URL=
+TEMP_SOURCE=sensor         # or ha
+ENABLE_CLOUDFLARED=1       # 0 when a reverse proxy owns the domain
 ```
 
-`ENABLE_CLOUDFLARED=1` is for standalone Raspberry Pi tunnel mode. Use `ENABLE_CLOUDFLARED=0` when another host, such as a Mac mini running Traefik, Authelia, and Cloudflare, owns the public domain and proxies to the Pi over local networking.
+See `.env.example` for the full list (servo tuning, Home Assistant, Cloudflare, proxy‑trust flags).
 
-When the app is behind a trusted reverse proxy, set `TRUST_PROXY_HEADERS=1` so generated UI routes honor forwarded host and protocol headers. If the app is intentionally served under a URL path prefix, also set `TRUST_PROXY_PREFIX_HEADERS=1`; leave it at `0` for domain-root proxying such as `https://dogo.example.com/`. If that proxy is Authelia, set `TRUST_PROXY_AUTH_HEADERS=1` so requests with a `Remote-User` header are treated as authenticated. Camera movement is allowed only for users in `DOGCAM_CONTROL_GROUPS`; other authenticated users can view the stream without servo controls. The Home button uses `DOGCAM_HOME_URL`, defaulting to `/`, and the Logout button always goes through the local `/logout` route. For Authelia proxy mode, set `DOGCAM_LOGOUT_URL` to the external Authelia logout URL, such as `https://auth.example.com/logout`, so `/logout` clears the app session and then logs the user out of Authelia. Direct unauthenticated access to `/logout` is rejected. Keep all proxy trust flags at `0` for standalone Raspberry Pi mode unless a trusted reverse proxy strips incoming auth headers and sets its own.
+**Reverse‑proxy mode** — when another host (e.g. a Mac mini running Traefik/Authelia/Cloudflare) owns the public domain and proxies to the Pi: set `ENABLE_CLOUDFLARED=0`, `TRUST_PROXY_HEADERS=1`, and (behind Authelia) `TRUST_PROXY_AUTH_HEADERS=1` so a `Remote-User` header is trusted, plus `DOGCAM_LOGOUT_URL=https://auth.example/logout`. Camera movement is limited to users in `DOGCAM_CONTROL_GROUPS`; others can view only. Keep all `TRUST_PROXY_*` at `0` in standalone mode.
 
+**Temperature source** — `/temp` reads a local DHT22 (`TEMP_SOURCE=sensor`, needs `adafruit_dht`, wired to `GPIO4`) or Home Assistant (`TEMP_SOURCE=ha` + `HA_URL`/`HA_TOKEN`/`HA_*_ENTITY` using an HA long‑lived token). HA mode skips the DHT22 dependency.
 
-### Temperature and Humidity Source
-
-The `/temp` endpoint can read from either a local DHT22 sensor or a Home Assistant instance.
-
-**Local sensor (default):**
-
-```env
-TEMP_SOURCE=sensor
-```
-
-Reads from a DHT22 connected to `GPIO4`. Requires the `adafruit_dht` library.
-
-**Home Assistant:**
-
-```env
-TEMP_SOURCE=ha
-HA_URL=http://your-ha-host:8123
-HA_TOKEN=your-long-lived-access-token
-HA_TEMP_ENTITY=sensor.your_temperature_entity
-HA_HUMIDITY_ENTITY=sensor.your_humidity_entity
-```
-
-Reads temperature and humidity from Home Assistant entities via its REST API. Create a long-lived access token in HA under Profile > Security. The entities must report numeric state values.
-
-When `TEMP_SOURCE=ha`, the DHT22 sensor is not initialized, so the `adafruit_dht` hardware dependency is only needed for local sensor mode.
-
-## Raspberry Pi Setup
-
-### 1. System packages
+## Raspberry Pi setup
 
 ```bash
-sudo apt update
-sudo apt upgrade -y
+sudo apt update && sudo apt upgrade -y
 sudo apt install -y libgpiod2 libcamera-apps-lite python3-picamera2 python3-dev
-```
-
-If you use the DHT22:
-
-```bash
-sudo apt install -y libgpiod-dev
-```
-
-### 2. Clone the repo
-
-```bash
-git clone <your-repo-url> dogo-cam
-cd dogo-cam
-```
-
-### 3. Install `uv`
-
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-```
-
-Restart the shell or add `~/.local/bin` to `PATH` if needed.
-
-### 4. Install Python dependencies
-
-```bash
+# DHT22 only: sudo apt install -y libgpiod-dev
+git clone <your-repo-url> dogo-cam && cd dogo-cam
+curl -LsSf https://astral.sh/uv/install.sh | sh      # ensure ~/.local/bin is on PATH
 uv sync
-```
-
-You can also use:
-
-```bash
-uv run python -m py_compile dogcam_stream.py servo_control_rpigpio.py
-```
-
-### 5. Run locally
-
-```bash
 uv run gunicorn --worker-class gthread --workers 1 --threads 4 --bind 0.0.0.0:5000 dogcam_stream:app
 ```
 
-Open `http://<pi-ip>:5000`.
+Then open `http://<pi-ip>:5000`.
 
 ## systemd
 
-Example units are in `service_startup/`.
-
-### Flask app
-
-Copy `service_startup/dog-stream-flask.service` to `/etc/systemd/system/dog-stream.service`, then adjust:
-
-- `User`
-- `WorkingDirectory`
-- `EnvironmentFile`
-- `ExecStart`
-
-Enable it:
+Example units are in `service_startup/`. Copy `dog-stream-flask.service` → `/etc/systemd/system/dog-stream.service`, adjust `User` / `WorkingDirectory` / `EnvironmentFile` / `ExecStart`, then:
 
 ```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now dog-stream.service
-sudo systemctl status dog-stream.service
+sudo systemctl daemon-reload && sudo systemctl enable --now dog-stream
 ```
 
-### Switch control service
+Optionally install `button-control.service` (GPIO switch), `dogcam-watchdog.{service,timer}` (self‑healing), and `cloudflared-tunnel.service` (standalone tunnel mode — after creating the tunnel + `~/.cloudflared/config.yml` and setting `ENABLE_CLOUDFLARED=1`).
 
-If you use the GPIO switch on `GPIO17`:
+## Deploying updates
+
+**Manual:**
 
 ```bash
-sudo cp service_startup/button-control.service /etc/systemd/system/button-control.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now button-control.service
+cd ~/dogo-cam && git pull && uv sync && sudo systemctl restart dog-stream
 ```
 
-This service runs `ky004-control.py`, which monitors the switch and starts or stops the camera stack.
-
-Update the unit path if your project directory is different.
-
-### Optional Cloudflare Tunnel
-
-Use this mode when the Raspberry Pi should hold the Cloudflare tunnel itself.
-
-Copy `service_startup/cloudflared-tunnel.service` after you have:
-
-- installed `cloudflared`
-- created a tunnel
-- created `~/.cloudflared/config.yml`
-- set `ENABLE_CLOUDFLARED=1` in `.env`
-- set `CLOUDFLARED_CONFIG` and `CLOUDFLARED_TUNNEL` in `.env` if your paths or tunnel name differ from the defaults
-
-Then:
+**Push to deploy (CI):** `.github/workflows/deploy.yml` runs on a **self‑hosted runner** (on an always‑on box you trust, e.g. the mini). On every push to `main` (or manual `workflow_dispatch`) it SSHes to the Pi and runs a fixed deploy script — the runner's *outbound* connection means the Pi can stay behind NAT with no inbound webhook. Because this is a **public repo**, it's locked down (see below): the runner uses a command‑locked SSH key that can only run `deploy/dogcam-deploy.sh`. Install the artifacts:
 
 ```bash
-sudo cp service_startup/cloudflared-tunnel.service /etc/systemd/system/cloudflared-tunnel.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now cloudflared-tunnel.service
+sudo install -m0755 deploy/dogcam-deploy.sh /usr/local/bin/dogcam-deploy.sh
+sudo install -m0440 deploy/dogcam-deploy.sudoers /etc/sudoers.d/dogcam-deploy
+# then add the forced-command line (see dogcam-deploy.sh header) for the deploy key to authorized_keys
 ```
 
-### Reverse Proxy Mode
+## Power & stability
 
-Use this mode when a separate host owns the public domain, Cloudflare Tunnel, and reverse proxy rules (e.g. Traefik + Authelia, Caddy, nginx, etc.).
+A Pi 3B funnels all current through its micro‑USB / polyfuse (~2–2.5A), so camera + MJPEG encoding + servos can brown out the 5V rail (under‑voltage) even with a strong supply — the camera stalls or the app hangs.
 
-On the Raspberry Pi:
+- **`STREAM_MAX_FPS`** (default 15) caps the framerate to cut peak draw — the biggest lever (`vcgencmd get_throttled` non‑zero = dips).
+- Single‑shot autofocus at startup (imx708) avoids continuous AF‑motor draw and PDAF log spam.
+- Real fix: power the servos from a **separate 5V** (common ground), or use a Pi 4/5.
+- **Self‑healing:** `dogcam-watchdog.timer` restarts a hung app; `dog-stream.service` uses `TimeoutStopSec=15` + `KillMode=mixed` so a stuck camera cleanup can't wedge it in `deactivating`.
+- Blank feed but `camera_status` says available → reseat the **CSI ribbon** (a loose cable gives "Camera frontend timed out" / zero frames while the sensor still enumerates on I²C).
 
-```env
-ENABLE_CLOUDFLARED=0
-TRUST_PROXY_HEADERS=1
-TRUST_PROXY_PREFIX_HEADERS=0
-TRUST_PROXY_AUTH_HEADERS=1
-DOGCAM_CONTROL_GROUPS=admin,admins,dogo_operators
-DOGCAM_HOME_URL=https://your-domain.example/
-DOGCAM_AUTH_SETTINGS_URL=https://auth.your-domain.example/settings
-DOGCAM_LOGOUT_URL=https://auth.your-domain.example/logout
-```
+## Security hardening
 
-Run only the Flask app and switch controller on the Pi. Configure your reverse proxy to reach `http://<pi-lan-ip>:5000` and preserve standard forwarded headers (`X-Forwarded-Proto`, `X-Forwarded-Host`, `X-Forwarded-Prefix`). Keep tunnel credentials and auth secrets on the proxy host.
+Important for a public repo with a self‑hosted runner:
 
-## Deploying Updates To The Pi
-
-### Manual
-
-```bash
-cd ~/dogo-cam
-git pull
-uv sync            # only if dependencies changed
-sudo systemctl restart dog-stream.service
-```
-
-### Automated (push to deploy)
-
-A GitHub Actions **self-hosted runner** (run it on an always-on box you trust,
-e.g. a mac mini on the same network) deploys on every push to `main` via
-`.github/workflows/deploy.yml`. The runner holds an *outbound* connection to
-GitHub, so it works even when the Pi is behind NAT / on an isolated network — no
-inbound webhook needed. On a push it SSHes to the Pi and runs a fixed deploy
-script; trigger it manually from the Actions tab or with `gh workflow run
-deploy.yml`.
-
-Because this is a **public repo**, the deploy path is locked down so the runner
-can do nothing on the Pi except deploy:
-
-- The runner authenticates with a **dedicated, command-locked SSH key** — its
-  `authorized_keys` forced command is `dogcam-deploy.sh`, so the key ignores any
-  other command. Install the artifacts from `deploy/`:
-  ```bash
-  sudo install -m0755 deploy/dogcam-deploy.sh /usr/local/bin/dogcam-deploy.sh
-  sudo install -m0440 deploy/dogcam-deploy.sudoers /etc/sudoers.d/dogcam-deploy
-  # then add the forced-command line (see dogcam-deploy.sh header) for the
-  # deploy key to the service user's ~/.ssh/authorized_keys
-  ```
-- Repo settings: require approval for **all external contributors** before any
-  fork PR runs on the runner, restrict allowed actions to GitHub-owned, and the
-  workflow uses `permissions: {}` and only triggers on push to `main` /
-  `workflow_dispatch`. See "Security Hardening".
-
-## Power And Stability
-
-A Pi 3B funnels all current through its micro-USB / input polyfuse (~2-2.5A), so
-the camera + MJPEG encoding + servos can spike the 5V rail into brown-out
-(under-voltage) even with a strong supply — the camera then stalls or the app
-hangs. Mitigations:
-
-- **`STREAM_MAX_FPS`** (default 15) caps the framerate to cut the peak draw — the
-  single most effective knob. Lower it further if `vcgencmd get_throttled`
-  returns non-zero under load.
-- The app runs **single-shot autofocus** at startup (imx708) instead of
-  continuous hunting, saving the AF motor's draw and the PDAF log spam.
-- The real fix is more headroom: power the servos from a **separate 5V supply**
-  (common ground) or move to a Pi 4/5.
-
-### Self-healing
-
-- `dogcam-watchdog.timer` restarts `dog-stream` if the app stops responding on
-  `:5000` (the single gunicorn worker can deadlock when the camera pipeline
-  stalls).
-- `dog-stream.service` sets `TimeoutStopSec=15` + `KillMode=mixed` so a hung
-  camera cleanup can't wedge the service in `deactivating`; systemd force-kills
-  it so the restart actually completes.
-- If the feed is blank but `camera_status` says available, suspect the **CSI
-  ribbon cable** — reseat both ends (a loose cable gives "Camera frontend has
-  timed out" and zero frames while the sensor still enumerates on I2C).
-
-## Security Hardening
-
-Especially important because this is a public repo with a self-hosted deploy
-runner:
-
-- **SSH is key-only** (`PasswordAuthentication no`, `PermitRootLogin no`).
-- **Minimal `authorized_keys`**: an admin key plus the command-locked deploy key
-  only.
-- **Firewall `:5000`** to the reverse-proxy / tunnel host and localhost, and drop
-  everything else — the stream port is otherwise reachable on the LAN.
-- **Disable services you don't use.** Some Pi images ship Samba enabled on
-  `139/445`; disable it so the listening surface stays `:22` + `:5000`.
-- **Scoped deploy sudo** (`deploy/dogcam-deploy.sudoers`) grants only
-  `systemctl restart dog-stream`, not broad sudo. Prefer not to give the service
-  user `NOPASSWD: ALL` — a deployed commit runs as that user.
+- SSH key‑only (`PasswordAuthentication no`, `PermitRootLogin no`); minimal `authorized_keys` (admin + command‑locked deploy key).
+- Firewall `:5000` to the proxy/tunnel host + localhost; drop the rest.
+- Disable unused services (e.g. Samba on `139/445`) — keep the surface to `:22` + `:5000`.
+- Scoped deploy sudo (`deploy/dogcam-deploy.sudoers`, restart only); avoid `NOPASSWD: ALL` on the service user.
 
 ## Notes
 
-- `.env` should stay only on the Pi or your local machine.
-- Use `DOGCAM_CAMERA_VIEW=upside_down` when the camera is mounted inverted. If unset or `normal`, no camera transform is applied. Arrow controls always send the matching servo direction.
-- Increase `SERVO_STEP_SIZE` for faster jumps, lower it for finer control. Lower `SERVO_SETTLE_SECONDS` only if the servos hold position reliably.
-- Servo positions are persisted in `/tmp/servo_positions.json`.
+- `.env` stays only on the Pi / your local machine.
+- Servo positions persist in `/tmp/servo_positions.json`; tune with `SERVO_STEP_SIZE` / `SERVO_SETTLE_SECONDS`.
