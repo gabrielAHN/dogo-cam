@@ -182,12 +182,27 @@ def init_camera():
         logger.info(f"Detected cameras: {camera_info}")
         camera = Picamera2(0)
         view = camera_view()
+        # Cap the framerate to limit the camera+encoder peak current draw. On a
+        # Pi 3B the aggregate load can spike the 5V rail into brown-out
+        # (under-voltage); a lower, fixed framerate keeps it comfortably on.
+        max_fps = max(1, int(os.getenv("STREAM_MAX_FPS", "15")))
+        frame_us = int(1_000_000 / max_fps)
         config = camera.create_video_configuration(
             main={"size": (640, 480)},
             transform=Transform(hflip=view == "upside_down", vflip=view == "upside_down"),
+            controls={"FrameDurationLimits": (frame_us, frame_us)},
         )
         camera.configure(config)
         camera.start_recording(JpegEncoder(), FileOutput(output))
+        # Single-shot autofocus at startup, then hold: avoids the imx708 AF motor
+        # hunting continuously (extra draw + PDAF log spam) while still focusing
+        # the real scene so the image stays sharp. No-op on fixed-focus cameras.
+        try:
+            from libcamera import controls as _af
+            camera.set_controls({"AfMode": _af.AfModeEnum.Auto, "AfTrigger": _af.AfTriggerEnum.Start})
+            logger.info("Autofocus: single-shot at startup")
+        except Exception as _afe:
+            logger.debug(f"Autofocus not available (fixed-focus camera?): {_afe}")
         camera_available = True
         camera_running = True
         logger.info(f"Camera initialized successfully with {view} view")
