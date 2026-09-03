@@ -5,12 +5,19 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# The deploy talks to the Pi over SSH; it never needs the GITHUB_TOKEN.
+permissions: {}
+
 concurrency:
   group: deploy-pi
   cancel-in-progress: true
 
 jobs:
   deploy:
+    # Only ever run in the canonical repo, and never from a pull_request context.
+    # (Belt-and-suspenders on top of repo setting: require approval for all
+    # external contributors, so no fork PR runs on the self-hosted runner.)
+    if: ${{ github.repository == 'gabrielAHN/dogo-cam' && github.event_name != 'pull_request' }}
     runs-on: [self-hosted, macmini]
     steps:
       - name: Pull latest on the Pi and restart (over Nebula)
