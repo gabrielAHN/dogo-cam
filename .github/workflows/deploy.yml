@@ -14,20 +14,13 @@ concurrency:
 
 jobs:
   deploy:
-    # Only ever run in the canonical repo, and never from a pull_request context.
-    # (Belt-and-suspenders on top of repo setting: require approval for all
-    # external contributors, so no fork PR runs on the self-hosted runner.)
     if: ${{ github.repository == 'gabrielAHN/dogo-cam' && github.event_name != 'pull_request' }}
     runs-on: [self-hosted, macmini]
     steps:
-      - name: Pull latest on the Pi and restart (over Nebula)
-        run: |
-          ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 \
-              -i ~/.ssh/id_ed25519 hidalgo-cam@192.168.100.10 '
-            set -e
-            cd ~/dogo-cam
-            git fetch --all --quiet
-            git reset --hard origin/main
-            sudo systemctl restart dog-stream
-            echo "deployed $(git rev-parse --short HEAD)"
-          '
+      - name: Trigger deploy on the Pi
+        # Uses a dedicated, command-locked SSH key: the Pi runs a fixed deploy
+        # script (git reset --hard origin/main + restart) regardless of any
+        # command sent, so this key/runner can do nothing else on the Pi.
+        run: >-
+          ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15
+          -i ~/.ssh/dogcam_deploy hidalgo-cam@192.168.100.10 deploy
