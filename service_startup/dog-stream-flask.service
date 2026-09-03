@@ -9,6 +9,10 @@ EnvironmentFile=-/home/your-user/dogo-cam/.env
 ExecStart=/home/your-user/.local/bin/uv run gunicorn --worker-class gthread --workers 1 --threads 4 --bind 0.0.0.0:5000 dogcam_stream:app
 Restart=always
 RestartSec=10
+# Don't let a hung camera cleanup wedge the stop in 'deactivating' for 90s;
+# force-kill after 15s so Restart/the watchdog can actually recover it.
+TimeoutStopSec=15
+KillMode=mixed
 LimitNOFILE=4096
 OOMScoreAdjust=-1000
 
