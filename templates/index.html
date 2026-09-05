@@ -506,7 +506,7 @@
         {% endif %}
 
         {% if camera_available %}
-        <img src="{{ url_for('video_feed') }}" alt="Live Dog Cam">
+        <img id="video-feed" src="{{ url_for('video_feed') }}" alt="Live Dog Cam">
         {% else %}
         <div class="camera-unavailable">
             <h2>📷</h2>
@@ -917,6 +917,46 @@
 
         setInterval(loadServoState, 2000);
         {% endif %}
+
+        // --- Stream auto-reconnect -------------------------------------------
+        // The MJPEG response now ends cleanly when the camera stalls (server-side
+        // frame timeout) or returns 503 while the pipeline restarts. Reconnect
+        // with backoff instead of leaving a frozen/broken image on screen.
+        (function () {
+            const img = document.getElementById('video-feed');
+            if (!img) return;
+            const baseSrc = img.getAttribute('src').split('?')[0];
+            let attempt = 0;
+            let timer = null;
+
+            function reconnect() {
+                if (timer) return;
+                const delay = Math.min(15000, 1000 * Math.pow(2, attempt++));
+                timer = setTimeout(() => {
+                    timer = null;
+                    img.src = baseSrc + '?t=' + Date.now();
+                }, delay);
+            }
+
+            img.addEventListener('load', () => { attempt = 0; });
+            img.addEventListener('error', reconnect);
+
+            // A multipart stream that ended without error (server-side frame
+            // timeout) does not reliably fire onerror, and a full gunicorn
+            // restart makes fetch() fail. Poll health; once the server is healthy
+            // again after any stall/outage, re-attach the <img> exactly once.
+            let sawStall = false;
+            setInterval(async () => {
+                try {
+                    const resp = await fetch({{ url_for('stream_health')|tojson }}, { cache: 'no-store' });
+                    const data = await resp.json();
+                    if (!data.healthy) { sawStall = true; return; }
+                    if (sawStall) { sawStall = false; attempt = 0; reconnect(); }
+                } catch (e) {
+                    sawStall = true; // unreachable: app restarting, retry next tick
+                }
+            }, 5000);
+        })();
 
     </script>
 </body>
