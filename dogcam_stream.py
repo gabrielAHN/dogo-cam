@@ -68,15 +68,48 @@ except Exception as e:
 class StreamingOutput(io.BufferedIOBase):
     def __init__(self):
         self.frame = None
+        self.frame_id = 0
+        self.last_frame_at = 0.0
         self.condition = threading.Condition()
 
     def write(self, buf):
         with self.condition:
             self.frame = buf
+            self.frame_id += 1
+            self.last_frame_at = time.monotonic()
             self.condition.notify_all()
+
+    def wait_for_frame(self, last_id, timeout):
+        """Block until a frame newer than last_id exists, or timeout.
+
+        Returns (frame_id, frame) or (last_id, None) on timeout. Never blocks
+        forever: a stalled camera must not pin a gunicorn thread indefinitely.
+        """
+        with self.condition:
+            if self.frame_id == last_id:
+                self.condition.wait(timeout)
+            if self.frame_id == last_id:
+                return last_id, None
+            return self.frame_id, self.frame
+
+    def seconds_since_frame(self):
+        with self.condition:
+            if self.frame_id == 0:
+                return None
+            return time.monotonic() - self.last_frame_at
 
 
 output = StreamingOutput()
+
+# Frame-stall handling. The camera can enumerate + "start" fine yet deliver
+# zero frames (loose CSI ribbon, under-voltage stall, pipeline wedge). Without
+# a timeout each /video_feed request waits forever on the frame condition, and
+# with gunicorn --workers 1 --threads 4 four such requests (one <img> plus a
+# couple of reloads) make the whole app unresponsive. The external watchdog
+# then restarts it and the proxy bounces the user to the home page: "crash".
+STREAM_FRAME_TIMEOUT = float(os.getenv("STREAM_FRAME_TIMEOUT", "5"))
+STREAM_STALL_RESTART_AFTER = float(os.getenv("STREAM_STALL_RESTART_AFTER", "20"))
+STREAM_STALL_CHECK_INTERVAL = float(os.getenv("STREAM_STALL_CHECK_INTERVAL", "5"))
 
 
 def login_required(f):
@@ -214,6 +247,79 @@ def init_camera():
         return False
 
 
+def _teardown_camera():
+    """Best-effort stop+close of the current Picamera2 instance. Caller holds camera_lock."""
+    global camera, camera_running
+    if camera is None:
+        return
+    for step in ("stop_recording", "close"):
+        try:
+            getattr(camera, step)()
+        except Exception as e:
+            logger.warning(f"Camera {step} during restart failed: {e}")
+    camera = None
+    camera_running = False
+
+
+def restart_camera(reason):
+    """Tear down and re-create the camera pipeline in-process.
+
+    Used when the pipeline is 'running' but no frames arrive. Much cheaper than
+    letting the external watchdog kill the whole gunicorn process, and it does
+    not drop the HTTP listener, so the UI shows a stalled-stream notice instead
+    of a proxy error page.
+    """
+    with camera_lock:
+        logger.warning(f"Restarting camera pipeline: {reason}")
+        _teardown_camera()
+        ok = init_camera()
+        logger.warning(f"Camera pipeline restart {'succeeded' if ok else 'FAILED'}")
+        return ok
+
+
+def stream_is_stalled():
+    """True when the camera claims to be running but frames stopped arriving."""
+    if not camera_available or not camera_running or not get_stream_state():
+        return False
+    age = output.seconds_since_frame()
+    if age is None:
+        # Never produced a frame since (re)start. Give it the same grace period.
+        return _camera_started_at is not None and time.monotonic() - _camera_started_at > STREAM_STALL_RESTART_AFTER
+    return age > STREAM_STALL_RESTART_AFTER
+
+
+_camera_started_at = None
+
+
+def _mark_camera_started():
+    global _camera_started_at
+    _camera_started_at = time.monotonic()
+
+
+def monitor_stream_stall():
+    """Background thread: restart the camera pipeline if frames stop arriving."""
+    consecutive_failures = 0
+    while True:
+        time.sleep(STREAM_STALL_CHECK_INTERVAL)
+        if is_shutdown_pending():
+            break
+        try:
+            if not stream_is_stalled():
+                consecutive_failures = 0
+                continue
+            age = output.seconds_since_frame()
+            desc = "no frames since start" if age is None else f"last frame {age:.0f}s ago"
+            if restart_camera(desc):
+                _mark_camera_started()
+                consecutive_failures = 0
+            else:
+                consecutive_failures += 1
+                # Back off so a dead camera doesn't spin the CPU (and power) forever.
+                time.sleep(min(60, STREAM_STALL_CHECK_INTERVAL * (2**consecutive_failures)))
+        except Exception as e:
+            logger.error(f"Stall monitor error: {e}")
+
+
 def get_stream_state():
     try:
         with open(STREAM_STATE_FILE, "r") as f:
@@ -264,12 +370,16 @@ def cleanup():
 
 
 init_camera()
+_mark_camera_started()
 
 if servo_available and servo_controller:
     servo_controller.initialize()
 
 shutdown_monitor = threading.Thread(target=check_shutdown_and_stop_camera, daemon=True)
 shutdown_monitor.start()
+
+stall_monitor = threading.Thread(target=monitor_stream_stall, daemon=True, name="stream-stall-monitor")
+stall_monitor.start()
 
 atexit.register(cleanup)
 
@@ -310,15 +420,33 @@ def logout():
 
 
 def gen():
-    if not camera_available:
-        yield b""
-        return
+    """MJPEG frame generator.
 
+    Bounded waits: if no new frame arrives within STREAM_FRAME_TIMEOUT the
+    response ends cleanly so the <img> onerror fires client-side and, more
+    importantly, the gunicorn thread is released. Previously this waited
+    forever, so a stalled camera wedged one thread per request until the app
+    stopped answering entirely.
+    """
+    last_id = 0
     while True:
-        with output.condition:
-            output.condition.wait()
-            frame = output.frame
+        if not camera_available or not camera_running:
+            return
+        last_id, frame = output.wait_for_frame(last_id, STREAM_FRAME_TIMEOUT)
+        if frame is None:
+            logger.warning(f"video_feed: no frame for {STREAM_FRAME_TIMEOUT:.0f}s, closing stream")
+            return
         yield b"--frame\r\n" b"Content-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
+
+
+def gen_with_viewer_slot():
+    """Hold the viewer semaphore for the lifetime of the stream, not just the
+    handler call. The old code released it in a `finally` before the generator
+    ran, so MAX_VIEWERS was never actually enforced."""
+    try:
+        yield from gen()
+    finally:
+        viewer_semaphore.release()
 
 
 @app.route("/")
@@ -344,12 +472,32 @@ def video_feed():
         return "Stream is currently disabled. Press the button to enable.", 503
     if not camera_available:
         return "Camera not available. Please check camera connection.", 503
+    # Fail fast when the pipeline is stalled instead of holding the connection
+    # open for nothing; the client retries and the stall monitor restarts the camera.
+    age = output.seconds_since_frame()
+    if age is not None and age > STREAM_FRAME_TIMEOUT:
+        return "Camera stream stalled; recovering.", 503, {"Retry-After": "3"}
     if not viewer_semaphore.acquire(blocking=False):
         return "Max viewers reached. Try again later.", 503
-    try:
-        return Response(gen(), mimetype="multipart/x-mixed-replace; boundary=frame")
-    finally:
-        viewer_semaphore.release()
+    # The generator releases the slot when the stream ends (see gen_with_viewer_slot).
+    return Response(gen_with_viewer_slot(), mimetype="multipart/x-mixed-replace; boundary=frame")
+
+
+@app.route("/stream_health")
+@login_required
+def stream_health():
+    """Machine-readable stream health for the UI and external watchdogs."""
+    age = output.seconds_since_frame()
+    healthy = camera_available and camera_running and age is not None and age <= STREAM_FRAME_TIMEOUT
+    body = {
+        "camera_available": camera_available,
+        "camera_running": camera_running,
+        "stream_enabled": get_stream_state(),
+        "frames": output.frame_id,
+        "last_frame_age_s": None if age is None else round(age, 1),
+        "healthy": healthy,
+    }
+    return jsonify(body), 200 if healthy else 503
 
 
 def read_ha_entity(entity_id):
@@ -448,7 +596,12 @@ def stream_status():
         return "⚠️ Shutting Down..."
     if not camera_available:
         return "⚠️ Camera Not Connected"
-    return "🟢 Stream Active" if get_stream_state() else "🔴 Stream Paused"
+    if not get_stream_state():
+        return "🔴 Stream Paused"
+    age = output.seconds_since_frame()
+    if age is None or age > STREAM_FRAME_TIMEOUT:
+        return "🟡 Stream Stalled — reconnecting…"
+    return "🟢 Stream Active"
 
 
 @app.route("/camera_status")
