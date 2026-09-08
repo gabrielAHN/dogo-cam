@@ -96,6 +96,8 @@ All image tuning (`CAM_*`), day/night switching and digital zoom are **ISP‑sid
 | `/camera/zoom` | GET / POST | read / set digital zoom `{"zoom":2.0}` or `{"step":0.5}` |
 | `/snapshot` | GET | latest frame as a still JPEG (serves the live frame — no extra capture) |
 
+**In the web UI**, the ⚙ settings button opens a Camera Controls panel with a **Day / Night** row — three icon buttons: **🔄 Auto** (follow the light sensor, the default), **☀️ Light** (force colour) and **🌙 Dark** (force grayscale). The active mode is highlighted and the hint shows the live lux; tapping Auto hands control back to the sensor. Changing mode needs camera-control permission (`DOGCAM_CONTROL_GROUPS`); everyone else sees it read-only.
+
 ### Camera configuration reference
 
 Every knob is an env var in `.env` with a safe default — nothing below is required, and unset values keep the sensor/ISP default. Change them without touching code; a restart applies resolution/tuning-file changes, while day/night, saturation, zoom and EV adjust live. The **Default** column is the value shipped in `.env.example` (a few internal code fallbacks differ slightly).

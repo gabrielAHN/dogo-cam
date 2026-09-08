@@ -156,7 +156,7 @@
             font-family: 'Roboto', sans-serif;
             transition: all 0.3s ease;
             -webkit-tap-highlight-color: transparent;
-            display: {% if servo_available %}block{% else %}none{% endif %};
+            display: {% if servo_available or daynight_available %}block{% else %}none{% endif %};
         }
 
         #top-actions #fullscreen-btn,
@@ -169,7 +169,7 @@
         }
 
         #top-actions #settings-btn {
-            display: {% if servo_available %}inline-flex{% else %}none{% endif %};
+            display: {% if servo_available or daynight_available %}inline-flex{% else %}none{% endif %};
         }
 
         #settings-btn:hover {
@@ -357,6 +357,67 @@
             border-color: rgba(255, 165, 0, 0.8);
         }
 
+        .daynight-buttons {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 10px;
+            width: 100%;
+        }
+
+        .daynight-btn {
+            background-color: rgba(255, 255, 255, 0.12);
+            color: #fff;
+            border: 2px solid rgba(255, 255, 255, 0.25);
+            border-radius: 10px;
+            cursor: pointer;
+            font-family: 'Roboto', sans-serif;
+            transition: all 0.2s ease;
+            -webkit-tap-highlight-color: transparent;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            padding: 14px 6px;
+            touch-action: manipulation;
+            user-select: none;
+        }
+
+        .daynight-btn .dn-icon {
+            font-size: 26px;
+            line-height: 1;
+        }
+
+        .daynight-btn .dn-label {
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            opacity: 0.85;
+        }
+
+        .daynight-btn:active {
+            transform: scale(0.94);
+        }
+
+        .daynight-btn.active {
+            background-color: rgba(76, 175, 80, 0.28);
+            border-color: #4CAF50;
+        }
+
+        .daynight-btn.active .dn-label {
+            opacity: 1;
+            color: #4CAF50;
+            font-weight: bold;
+        }
+
+        .daynight-hint {
+            font-size: 12px;
+            color: #fff;
+            opacity: 0.7;
+            text-align: center;
+            margin-top: 10px;
+        }
+
         .camera-unavailable {
             color: #fff;
             font-family: 'Roboto', sans-serif;
@@ -476,11 +537,34 @@
             <button class="top-action" id="fullscreen-btn" title="Toggle Fullscreen">⛶</button>
         </div>
 
-        {% if servo_available %}
+        {% if servo_available or daynight_available %}
         <div id="servo-controls-modal">
             <span class="close-modal" onclick="toggleServoModal()">×</span>
             <div id="servo-controls">
                 <div class="modal-header">⚙ Camera Controls</div>
+
+                {% if daynight_available %}
+                <div id="panel-daynight" class="servo-panel visible">
+                    <div class="servo-label">
+                        <span>Day / Night</span>
+                        <span class="servo-value" id="daynight-status">--</span>
+                    </div>
+                    <div class="daynight-buttons">
+                        <button id="dn-auto" class="daynight-btn" data-mode="auto" title="Auto: follow the light sensor">
+                            <span class="dn-icon">🔄</span><span class="dn-label">Auto</span>
+                        </button>
+                        <button id="dn-day" class="daynight-btn" data-mode="day" title="Force colour (day)">
+                            <span class="dn-icon">☀️</span><span class="dn-label">Light</span>
+                        </button>
+                        <button id="dn-night" class="daynight-btn" data-mode="night" title="Force grayscale (night)">
+                            <span class="dn-icon">🌙</span><span class="dn-label">Dark</span>
+                        </button>
+                    </div>
+                    <div class="daynight-hint" id="daynight-hint">Auto follows the room light.</div>
+                </div>
+                {% endif %}
+
+                {% if servo_available %}
                 <div id="panel-manual" class="servo-panel visible">
                     <div class="servo-label"><span>Tilt</span><span class="servo-value" id="servo1-angle">--</span></div>
                     <div class="servo-buttons tilt-buttons">
@@ -501,6 +585,7 @@
                         <div style="margin-top: 5px;"><strong>Touch:</strong> Tap or hold the screen direction</div>
                     </div>
                 </div>
+                {% endif %}
             </div>
         </div>
         {% endif %}
@@ -528,8 +613,10 @@
         const routes = {
             servoMove: {{ url_for('servo_move')|tojson }},
             servoPosition: {{ url_for('servo_position')|tojson }},
-            servoReset: {{ url_for('servo_reset')|tojson }}
+            servoReset: {{ url_for('servo_reset')|tojson }},
+            daynight: {{ url_for('camera_daynight')|tojson }}
         };
+        const canControlCamera = {{ 'true' if can_control_camera else 'false' }};
         let mobileFullscreen = false;
 
         function isFullscreen() {
@@ -916,6 +1003,76 @@
         }
 
         setInterval(loadServoState, 2000);
+        {% endif %}
+
+        {% if daynight_available %}
+        // --- Day / Night mode control ---------------------------------------
+        (function () {
+            const statusEl = document.getElementById('daynight-status');
+            const hintEl = document.getElementById('daynight-hint');
+            const buttons = Array.from(document.querySelectorAll('.daynight-btn'));
+            if (!buttons.length) return;
+
+            const MODE_LABEL = { day: '☀️ Light', night: '🌙 Dark' };
+
+            function render(info) {
+                // info: { override: auto|day|night, mode: day|night, lux: number|null }
+                const override = info.override || 'auto';
+                buttons.forEach(b => b.classList.toggle('active', b.dataset.mode === override));
+                if (statusEl) {
+                    const active = MODE_LABEL[info.mode] || info.mode || '--';
+                    statusEl.textContent = active;
+                }
+                if (hintEl) {
+                    const lux = (info.lux === null || info.lux === undefined) ? '—' : Math.round(info.lux);
+                    if (override === 'auto') {
+                        hintEl.textContent = `Auto — following the light (${lux} lux → ${info.mode}).`;
+                    } else {
+                        hintEl.textContent = `Manually locked to ${override}. Tap Auto to follow the light again.`;
+                    }
+                }
+            }
+
+            async function refresh() {
+                try {
+                    const r = await fetch(routes.daynight, { headers: { 'Accept': 'application/json' } });
+                    if (r.ok) render(await r.json());
+                } catch (e) { /* transient; next poll retries */ }
+            }
+
+            async function setMode(mode) {
+                if (!canControlCamera) {
+                    if (hintEl) hintEl.textContent = 'You do not have permission to change the camera.';
+                    return;
+                }
+                try {
+                    const r = await fetch(routes.daynight, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ mode })
+                    });
+                    if (r.ok) {
+                        render(await r.json());
+                    } else if (r.status === 403) {
+                        if (hintEl) hintEl.textContent = 'You do not have permission to change the camera.';
+                    }
+                } catch (e) {
+                    if (hintEl) hintEl.textContent = 'Could not reach the camera. Try again.';
+                }
+            }
+
+            buttons.forEach(b => {
+                if (!canControlCamera) {
+                    b.style.opacity = '0.5';
+                    b.style.cursor = 'not-allowed';
+                    b.title = 'View only — no camera-control permission';
+                }
+                b.addEventListener('click', () => setMode(b.dataset.mode));
+            });
+
+            refresh();
+            setInterval(refresh, 3000);
+        })();
         {% endif %}
 
         // --- Stream auto-reconnect -------------------------------------------

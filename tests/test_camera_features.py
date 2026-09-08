@@ -367,6 +367,17 @@ class CameraFeatureTest(unittest.TestCase):
         self.assertIn(dn["mode"], ("day", "night"))
         self.assertIn("lux", dn)
 
+    def test_index_page_has_daynight_controls(self):
+        # The settings modal should render the auto/day/night buttons and wire
+        # the /camera/daynight route into the page JS.
+        status, body = self._req("GET", "/")
+        self.assertEqual(status, 200)
+        html = body.decode()
+        for marker in ('id="dn-auto"', 'id="dn-day"', 'id="dn-night"',
+                       'data-mode="auto"', 'data-mode="day"', 'data-mode="night"',
+                       'id="servo-controls-modal"'):
+            self.assertIn(marker, html, marker)
+
     def test_noir_tuning_file_loaded(self):
         # The active Picamera2 instance should have been created with the NoIR
         # tuning file (default CAM_TUNING_FILE=ov5647_noir.json).
