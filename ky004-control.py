@@ -10,6 +10,7 @@ import lgpio
 
 SWITCH_PIN = int(os.getenv("SWITCH_PIN", "17"))
 SWITCH_ON_VALUE = int(os.getenv("SWITCH_ON_VALUE", "0"))
+SWITCH_MODE = os.getenv("SWITCH_MODE", "auto").strip().lower()
 SWITCH_LOG_INTERVAL = float(os.getenv("SWITCH_LOG_INTERVAL", "10"))
 SWITCH_RECONCILE_INTERVAL = float(os.getenv("SWITCH_RECONCILE_INTERVAL", "5"))
 STREAM_SVC = "dog-stream.service"
@@ -122,6 +123,44 @@ def reset_failed_services():
     run(["sudo", "systemctl", "reset-failed"], timeout=5)
 
 
+def stable_gpio_value(values):
+    if values and all(value == values[0] for value in values):
+        return values[0]
+    return None
+
+
+def read_pull_value(handle, pin, pull, samples=5, settle=0.05):
+    try:
+        lgpio.gpio_free(handle, pin)
+    except Exception:
+        pass
+    lgpio.gpio_claim_input(handle, pin, pull)
+    time.sleep(settle)
+    return stable_gpio_value([lgpio.gpio_read(handle, pin) for _ in range(samples)])
+
+
+def resolve_switch_mode(mode, pull_down=None, pull_up=None):
+    if mode not in {"auto", "gpio", "always-on"}:
+        raise ValueError("SWITCH_MODE must be auto, gpio, or always-on")
+    if mode != "auto":
+        return mode
+    if pull_down == 0 and pull_up == 1:
+        return "always-on"
+    return "gpio"
+
+
+def detect_switch_mode(handle):
+    if SWITCH_MODE != "auto":
+        return resolve_switch_mode(SWITCH_MODE)
+    pull_down = read_pull_value(handle, SWITCH_PIN, lgpio.SET_PULL_DOWN)
+    pull_up = read_pull_value(handle, SWITCH_PIN, lgpio.SET_PULL_UP)
+    mode = resolve_switch_mode(SWITCH_MODE, pull_down=pull_down, pull_up=pull_up)
+    log.info(
+        f"Switch auto-detection: pull-down={pull_down}, pull-up={pull_up}, mode={mode}"
+    )
+    return mode
+
+
 def switch_label(state):
     return "ON" if state == SWITCH_ON_VALUE else "OFF"
 
@@ -208,16 +247,41 @@ def apply_state(state, force_led=False):
             led_off()
 
 
+def run_always_on():
+    log.info("No GPIO switch detected; keeping camera services on")
+    apply_state(SWITCH_ON_VALUE, force_led=True)
+    last_reconcile = time.time()
+    try:
+        while True:
+            if time.time() - last_reconcile >= SWITCH_RECONCILE_INTERVAL:
+                apply_state(SWITCH_ON_VALUE)
+                last_reconcile = time.time()
+            time.sleep(0.1)
+    except KeyboardInterrupt:
+        log.info("Stopped")
+
+
 def main():
+    if SWITCH_MODE == "always-on":
+        run_always_on()
+        return
+
     h = lgpio.gpiochip_open(0)
-    lgpio.gpio_claim_input(h, SWITCH_PIN, lgpio.SET_PULL_UP)
+    mode = detect_switch_mode(h)
+
+    if mode == "always-on":
+        lgpio.gpiochip_close(h)
+        run_always_on()
+        return
+
+    read_pull_value(h, SWITCH_PIN, lgpio.SET_PULL_UP)
 
     def read():
-        vals = []
+        values = []
         for _ in range(3):
-            vals.append(lgpio.gpio_read(h, SWITCH_PIN))
+            values.append(lgpio.gpio_read(h, SWITCH_PIN))
             time.sleep(0.017)
-        return 0 if all(v == 0 for v in vals) else 1 if all(v == 1 for v in vals) else None
+        return stable_gpio_value(values)
 
     state = None
     while state is None:

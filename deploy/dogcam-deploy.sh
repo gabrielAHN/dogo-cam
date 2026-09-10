@@ -16,4 +16,5 @@ cd "${DOGCAM_DIR:-$HOME/dogo-cam}"
 git fetch --all --quiet
 git reset --hard origin/main
 sudo systemctl restart dog-stream
+sudo systemctl try-restart button-control
 echo "deployed $(git rev-parse --short HEAD)"

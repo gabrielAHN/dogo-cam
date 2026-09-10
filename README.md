@@ -33,7 +33,7 @@ Servos and fan draw from the Pi 5V rail with shared ground. The mount is inverte
 
 > **Camera note:** the sensor reports as a plain `ov5647` regardless of the lens/filter, so software can't tell it's the NoIR wide-angle module — the NoIR behaviour is configured, not auto-detected. See [Camera capabilities](#camera-capabilities) for the tuning, day/night and image config.
 
-**Switch** (`ky004-control.py`): ON (`GPIO17` low) starts `dog-stream` (and `cloudflared-tunnel` if enabled); OFF stops them cleanly. Set `SWITCH_ON_VALUE=1` if your module is inverted, or `SWITCH_PIN` for a different GPIO.
+**Switch** (`ky004-control.py`): `SWITCH_MODE=auto` probes `GPIO17` at startup. A floating pin means no switch is attached, so the camera is kept on and restarted if it stops. A connected switch keeps the existing behavior: ON (`GPIO17` low) starts `dog-stream` (and `cloudflared-tunnel` if enabled); OFF stops them cleanly. Use `SWITCH_MODE=gpio` to force hardware control or `SWITCH_MODE=always-on` to bypass GPIO explicitly. Set `SWITCH_ON_VALUE=1` if your module is inverted, or `SWITCH_PIN` for a different GPIO.
 
 ## Controls
 
@@ -67,6 +67,7 @@ DAYNIGHT_NIGHT_LUX=5       # below this (sustained DAYNIGHT_NIGHT_AFTER=45s) -> 
 DAYNIGHT_DAY_LUX=12        # above this (sustained DAYNIGHT_DAY_AFTER=8s) -> day; eager to show colour
 DAYNIGHT_MODE=auto         # startup override: auto|day|night
 CAM_ZOOM=1.0               # digital zoom 1.0-CAM_ZOOM_MAX(4.0) via ScalerCrop
+SWITCH_MODE=auto            # auto|gpio|always-on
 SWITCH_PIN=17
 SWITCH_ON_VALUE=0
 TEMP_SOURCE=sensor         # or ha
@@ -176,7 +177,7 @@ Example units are in `service_startup/`. Copy `dog-stream-flask.service` → `/e
 sudo systemctl daemon-reload && sudo systemctl enable --now dog-stream
 ```
 
-Optionally install `button-control.service` (GPIO switch), `dogcam-watchdog.{service,timer}` (self‑healing), and `cloudflared-tunnel.service` (standalone tunnel mode — after creating the tunnel + `~/.cloudflared/config.yml` and setting `ENABLE_CLOUDFLARED=1`).
+Install `button-control.service` in all configurations: it uses `SWITCH_MODE=auto` to detect a connected switch and otherwise keeps the camera online. Use `SWITCH_MODE=always-on` for a deterministic switchless installation. Also install `dogcam-watchdog.{service,timer}` for stream self-healing, and optionally `cloudflared-tunnel.service` for standalone tunnel mode (after creating the tunnel + `~/.cloudflared/config.yml` and setting `ENABLE_CLOUDFLARED=1`).
 
 ## Deploying updates
 
@@ -193,6 +194,8 @@ sudo install -m0755 deploy/dogcam-deploy.sh /usr/local/bin/dogcam-deploy.sh
 sudo install -m0440 deploy/dogcam-deploy.sudoers /etc/sudoers.d/dogcam-deploy
 # then add the forced-command line (see dogcam-deploy.sh header) for the deploy key to authorized_keys
 ```
+
+Existing installations must reinstall both files after updating the repository; the checked-out copies do not replace `/usr/local/bin/dogcam-deploy.sh` or `/etc/sudoers.d/dogcam-deploy` automatically.
 
 ## Power & stability
 
