@@ -1,19 +1,30 @@
+import atexit
 import io
+import json
+import logging
 import os
+import tempfile
 import threading
 import time
-import atexit
-import logging
-from datetime import timedelta
-from urllib.parse import urlsplit
-import json
 import urllib.request
+from datetime import timedelta
+from functools import wraps
+from urllib.parse import urlsplit
 
 import adafruit_dht
 import board
 from dotenv import load_dotenv
-from flask import Flask, Response, abort, jsonify, redirect, render_template, request, session, url_for
-from functools import wraps
+from flask import (
+    Flask,
+    Response,
+    abort,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    session,
+    url_for,
+)
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 logging.basicConfig(level=logging.INFO)
@@ -47,6 +58,11 @@ cached_humidity = None
 
 STREAM_STATE_FILE = "/tmp/stream_enabled"
 SHUTDOWN_STATE_FILE = "/tmp/shutdown_pending"
+CAMERA_VIEW_STATE_FILE = os.getenv(
+    "CAMERA_VIEW_STATE_FILE", "/var/lib/dogcam/camera-view.json"
+)
+camera_view_state_lock = threading.Lock()
+camera_view_change_lock = threading.Lock()
 
 TEMP_SOURCE = os.environ.get("TEMP_SOURCE", "sensor").strip().lower()
 HA_URL = os.environ.get("HA_URL", "").strip()
@@ -516,14 +532,66 @@ def env_url(name, default=""):
     return os.getenv(name, default).strip()
 
 
-def camera_view():
-    value = os.getenv("DOGCAM_CAMERA_VIEW", "normal").strip().lower().replace("-", "_")
+def normalize_camera_view(value):
+    value = (value or "").strip().lower().replace("-", "_")
     if value in {"", "normal"}:
         return "normal"
     if value in {"upside_down", "inverted", "rotated_180", "180"}:
         return "upside_down"
-    logger.warning(f"Unsupported DOGCAM_CAMERA_VIEW={value!r}; using normal")
+    return None
+
+
+def camera_view():
+    with camera_view_state_lock:
+        try:
+            with open(CAMERA_VIEW_STATE_FILE) as state_file:
+                persisted = normalize_camera_view(json.load(state_file).get("view"))
+            if persisted:
+                return persisted
+        except (OSError, ValueError, TypeError, AttributeError):
+            pass
+
+    configured = os.getenv("DOGCAM_CAMERA_VIEW", "normal")
+    normalized = normalize_camera_view(configured)
+    if normalized:
+        return normalized
+    logger.warning(f"Unsupported DOGCAM_CAMERA_VIEW={configured!r}; using normal")
     return "normal"
+
+
+def save_camera_view(value):
+    normalized = normalize_camera_view(value)
+    if normalized is None:
+        return None
+
+    directory = os.path.dirname(CAMERA_VIEW_STATE_FILE)
+    temporary = None
+    with camera_view_state_lock:
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        try:
+            descriptor, temporary = tempfile.mkstemp(
+                dir=directory or ".", prefix=".camera-view-", suffix=".tmp"
+            )
+            with os.fdopen(descriptor, "w") as state_file:
+                json.dump({"view": normalized}, state_file)
+                state_file.flush()
+                os.fsync(state_file.fileno())
+            os.replace(temporary, CAMERA_VIEW_STATE_FILE)
+            temporary = None
+            directory_fd = os.open(directory or ".", os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        except Exception:
+            if temporary:
+                try:
+                    os.remove(temporary)
+                except OSError:
+                    pass
+            raise
+    return normalized
 
 
 def is_local_logout_url(value):
@@ -544,18 +612,15 @@ def navigation_urls():
     if session.get("logged_in"):
         return {
             "home_url": "",
-            "auth_settings_url": "",
             "logout_url": url_for("logout"),
         }
     if authelia_user():
         return {
             "home_url": env_url("DOGCAM_HOME_URL"),
-            "auth_settings_url": env_url("DOGCAM_AUTH_SETTINGS_URL"),
             "logout_url": env_url("DOGCAM_LOGOUT_URL"),
         }
     return {
         "home_url": "",
-        "auth_settings_url": "",
         "logout_url": "",
     }
 
@@ -1067,6 +1132,41 @@ def camera_info():
             "night_max_fps": NIGHT_MAX_FPS,
         },
     })
+
+
+@app.route("/camera/view", methods=["GET", "POST"])
+def camera_view_control():
+    if not is_authenticated():
+        return redirect(url_for("login", next=request.url))
+    if request.method == "GET":
+        return jsonify({"view": camera_view(), "options": ["normal", "upside_down"]})
+    if not can_control_camera():
+        return jsonify({"error": "Camera control is not allowed for this user"}), 403
+    if not camera_available:
+        return jsonify({"error": "Camera not available"}), 503
+
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"error": "Expected JSON with view=normal|upside_down"}), 400
+    requested = payload.get("view")
+    if requested not in {"normal", "upside_down"}:
+        return jsonify({"error": "view must be one of normal|upside_down"}), 400
+    normalized = requested
+
+    with camera_view_change_lock:
+        previous = camera_view()
+        try:
+            save_camera_view(normalized)
+        except OSError as error:
+            logger.error(f"Could not persist camera view: {error}")
+            return jsonify({"error": "Could not persist camera view"}), 500
+
+        restarted = normalized != previous
+        if restarted and not restart_camera(f"camera view changed to {normalized}"):
+            return jsonify({"error": "Camera restart failed", "view": normalized}), 503
+        if restarted:
+            _mark_camera_started()
+        return jsonify({"success": True, "view": normalized, "restarted": restarted})
 
 
 @app.route("/camera/daynight", methods=["GET", "POST"])

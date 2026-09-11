@@ -29,7 +29,7 @@ Raspberry Pi 3B (Pi OS) + **wide-angle NoIR CSI camera (OV5647 sensor, no IR-cut
 | DHT22 (optional) | `GPIO4` (Pin 7) / Pin 1 (3.3V) / Pin 9 | |
 | Cooling fan | Pin 4 (5V, split with pan) / Pin 6 | |
 
-Servos and fan draw from the Pi 5V rail with shared ground. The mount is inverted, so the stream is flipped in software (`DOGCAM_CAMERA_VIEW=upside_down`). See `PIN_DIAGRAM.md` for the full pinout.
+Servos and fan draw from the Pi 5V rail with shared ground. The mount is inverted, so select **Rotate 180°** in the web UI's ⚙ Camera Controls; the choice persists across service restarts and reboots. See `PIN_DIAGRAM.md` for the full pinout.
 
 > **Camera note:** the sensor reports as a plain `ov5647` regardless of the lens/filter, so software can't tell it's the NoIR wide-angle module — the NoIR behaviour is configured, not auto-detected. See [Camera capabilities](#camera-capabilities) for the tuning, day/night and image config.
 
@@ -52,7 +52,8 @@ STREAM_MAX_FPS=15          # framerate cap; lower = less power draw (see Power &
 STREAM_WIDTH=1296          # stream resolution (default 1296x972, was 640x480)
 STREAM_HEIGHT=972          #   1080p works but VGA/960p are gentler on the 5V rail
 DOG_NAME=Kotaro
-DOGCAM_CAMERA_VIEW=normal  # or upside_down
+DOGCAM_CAMERA_VIEW=normal  # initial fallback; the saved gear-menu choice wins
+CAMERA_VIEW_STATE_FILE=/var/lib/dogcam/camera-view.json
 # --- NoIR wide-angle camera: colour tuning + day/night ---
 CAM_TUNING_FILE=ov5647_noir.json  # NoIR tuning kills the daylight magenta cast; "" = sensor default
 CAM_SHARPNESS=1.5          # ISP tuning (0-16); also CAM_CONTRAST/CAM_SATURATION/CAM_BRIGHTNESS/CAM_EV
@@ -76,7 +77,7 @@ ENABLE_CLOUDFLARED=1       # 0 when a reverse proxy owns the domain
 
 See `.env.example` for the full list (servo tuning, Home Assistant, Cloudflare, proxy‑trust flags).
 
-**Reverse‑proxy mode** — when another host (e.g. a Mac mini running Traefik/Authelia/Cloudflare) owns the public domain and proxies to the Pi: set `ENABLE_CLOUDFLARED=0`, `TRUST_PROXY_HEADERS=1`, and (behind Authelia) `TRUST_PROXY_AUTH_HEADERS=1` so a `Remote-User` header is trusted. Configure the proxy-only navigation links with `DOGCAM_HOME_URL=https://portal.example/`, `DOGCAM_AUTH_SETTINGS_URL=https://auth.example/settings`, and `DOGCAM_LOGOUT_URL=https://auth.example/logout`; they are rendered only for trusted proxy-authenticated requests, while a local login keeps only its local Logout action. Camera movement is limited to users in `DOGCAM_CONTROL_GROUPS`; others can view only. Keep all `TRUST_PROXY_*` at `0` in standalone mode.
+**Reverse‑proxy mode** — when another host (e.g. a Mac mini running Traefik/Authelia/Cloudflare) owns the public domain and proxies to the Pi: set `ENABLE_CLOUDFLARED=0`, `TRUST_PROXY_HEADERS=1`, and (behind Authelia) `TRUST_PROXY_AUTH_HEADERS=1` so a `Remote-User` header is trusted. Configure the proxy-only navigation links with `DOGCAM_HOME_URL=https://portal.example/` and `DOGCAM_LOGOUT_URL=https://auth.example/logout`; they are rendered only for trusted proxy-authenticated requests, while a local login keeps only its local Logout action. Camera controls are limited to users in `DOGCAM_CONTROL_GROUPS`; others can view only. Keep all `TRUST_PROXY_*` at `0` in standalone mode.
 
 **Temperature source** — `/temp` reads a local DHT22 (`TEMP_SOURCE=sensor`, needs `adafruit_dht`, wired to `GPIO4`) or Home Assistant (`TEMP_SOURCE=ha` + `HA_URL`/`HA_TOKEN`/`HA_*_ENTITY` using an HA long‑lived token). HA mode skips the DHT22 dependency.
 
@@ -92,12 +93,13 @@ All image tuning (`CAM_*`), day/night switching and digital zoom are **ISP‑sid
 
 | Endpoint | Method | Purpose |
 |---|---|---|
-| `/camera/info` | GET | active resolution, fps cap, zoom, tuning, day/night mode + lux |
+| `/camera/info` | GET | active resolution, fps cap, orientation, zoom, tuning, day/night mode + lux |
+| `/camera/view` | GET / POST | read / set persisted orientation `{"view":"normal\|upside_down"}`; changes restart the camera pipeline |
 | `/camera/daynight` | GET / POST | read status / set override `{"mode":"auto\|day\|night"}` |
 | `/camera/zoom` | GET / POST | read / set digital zoom `{"zoom":2.0}` or `{"step":0.5}` |
 | `/snapshot` | GET | latest frame as a still JPEG (serves the live frame — no extra capture) |
 
-**In the web UI**, the ⚙ settings button opens a Camera Controls panel with a **Day / Night** row — three icon buttons: **🔄 Auto** (follow the light sensor, the default), **☀️ Light** (force colour) and **🌙 Dark** (force grayscale). The active mode is highlighted and the hint shows the live lux; tapping Auto hands control back to the sensor. Changing mode needs camera-control permission (`DOGCAM_CONTROL_GROUPS`); everyone else sees it read-only.
+**In the web UI**, the ⚙ settings button opens Camera Controls. The **Camera orientation** row switches between **Normal** and **Rotate 180°**, restarts the camera pipeline to apply the transform, and persists the choice across service restarts and reboots. The **Day / Night** row provides **🔄 Auto** (follow the light sensor, the default), **☀️ Light** (force colour), and **🌙 Dark** (force grayscale). Camera-control permission (`DOGCAM_CONTROL_GROUPS`) is required to change either setting; everyone else sees them read-only.
 
 ### Camera configuration reference
 
@@ -110,7 +112,8 @@ Every knob is an env var in `.env` with a safe default — nothing below is requ
 | `STREAM_WIDTH` × `STREAM_HEIGHT` | `1296` × `972` | Stream resolution. 640×480 / 800×600 are lighter; 1920×1080 works. Pixel count barely affects the 5V rail at a fixed fps. |
 | `STREAM_MAX_FPS` | `15` | Framerate cap — the real power lever (higher = more brown-out risk). |
 | `CAM_TUNING_FILE` | `ov5647_noir.json` | libcamera tuning file. NoIR file removes the daylight magenta cast; set empty (`CAM_TUNING_FILE=`) for the sensor default. |
-| `DOGCAM_CAMERA_VIEW` | `normal` | `upside_down` flips h+v for an inverted mount. |
+| `DOGCAM_CAMERA_VIEW` | `normal` | Initial `normal` or `upside_down` fallback before a UI choice is saved. |
+| `CAMERA_VIEW_STATE_FILE` | `/var/lib/dogcam/camera-view.json` | Persistent orientation selected from Camera Controls; takes precedence over `DOGCAM_CAMERA_VIEW`. |
 
 **Image quality (ISP, ~no power cost)**
 
