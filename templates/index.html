@@ -156,7 +156,7 @@
             font-family: 'Roboto', sans-serif;
             transition: all 0.3s ease;
             -webkit-tap-highlight-color: transparent;
-            display: {% if servo_available or daynight_available %}block{% else %}none{% endif %};
+            display: {% if camera_available or servo_available or daynight_available %}block{% else %}none{% endif %};
         }
 
         #top-actions #fullscreen-btn,
@@ -169,7 +169,7 @@
         }
 
         #top-actions #settings-btn {
-            display: {% if servo_available or daynight_available %}inline-flex{% else %}none{% endif %};
+            display: {% if camera_available or servo_available or daynight_available %}inline-flex{% else %}none{% endif %};
         }
 
         #settings-btn:hover {
@@ -364,6 +364,10 @@
             width: 100%;
         }
 
+        .camera-view-buttons {
+            grid-template-columns: repeat(2, 1fr);
+        }
+
         .daynight-btn {
             background-color: rgba(255, 255, 255, 0.12);
             color: #fff;
@@ -527,9 +531,6 @@
             {% if home_url %}
             <a class="top-action" href="{{ home_url }}">Home</a>
             {% endif %}
-            {% if auth_settings_url %}
-            <a class="top-action" href="{{ auth_settings_url }}">User settings</a>
-            {% endif %}
             {% if logout_url %}
             <a class="top-action" href="{{ logout_url }}">Logout</a>
             {% endif %}
@@ -537,11 +538,29 @@
             <button class="top-action" id="fullscreen-btn" title="Toggle Fullscreen">⛶</button>
         </div>
 
-        {% if servo_available or daynight_available %}
+        {% if camera_available or servo_available or daynight_available %}
         <div id="servo-controls-modal">
             <span class="close-modal" onclick="toggleServoModal()">×</span>
             <div id="servo-controls">
                 <div class="modal-header">⚙ Camera Controls</div>
+
+                {% if camera_available %}
+                <div id="panel-camera-view" class="servo-panel visible">
+                    <div class="servo-label">
+                        <span>Camera orientation</span>
+                        <span class="servo-value" id="camera-view-status">--</span>
+                    </div>
+                    <div class="daynight-buttons camera-view-buttons">
+                        <button id="view-normal" class="daynight-btn camera-view-btn" data-view="normal">
+                            <span class="dn-icon">⬆</span><span class="dn-label">Normal</span>
+                        </button>
+                        <button id="view-upside-down" class="daynight-btn camera-view-btn" data-view="upside_down">
+                            <span class="dn-icon">↻</span><span class="dn-label">Rotate 180°</span>
+                        </button>
+                    </div>
+                    <div class="daynight-hint" id="camera-view-hint">The selected orientation is saved.</div>
+                </div>
+                {% endif %}
 
                 {% if daynight_available %}
                 <div id="panel-daynight" class="servo-panel visible">
@@ -614,7 +633,8 @@
             servoMove: {{ url_for('servo_move')|tojson }},
             servoPosition: {{ url_for('servo_position')|tojson }},
             servoReset: {{ url_for('servo_reset')|tojson }},
-            daynight: {{ url_for('camera_daynight')|tojson }}
+            daynight: {{ url_for('camera_daynight')|tojson }},
+            cameraView: {{ url_for('camera_view_control')|tojson }}
         };
         const canControlCamera = {{ 'true' if can_control_camera else 'false' }};
         let mobileFullscreen = false;
@@ -1005,12 +1025,68 @@
         setInterval(loadServoState, 2000);
         {% endif %}
 
+        {% if camera_available %}
+        (function () {
+            const statusEl = document.getElementById('camera-view-status');
+            const hintEl = document.getElementById('camera-view-hint');
+            const buttons = Array.from(document.querySelectorAll('.camera-view-btn'));
+
+            function render(info) {
+                const view = info.view || 'normal';
+                buttons.forEach(button => {
+                    button.classList.toggle('active', button.dataset.view === view);
+                });
+                if (statusEl) {
+                    statusEl.textContent = view === 'upside_down' ? '180°' : 'Normal';
+                }
+                if (hintEl) {
+                    hintEl.textContent = 'The selected orientation is saved.';
+                }
+            }
+
+            async function setView(view) {
+                if (!canControlCamera) {
+                    if (hintEl) hintEl.textContent = 'You do not have permission to change the camera.';
+                    return;
+                }
+                buttons.forEach(button => { button.disabled = true; });
+                if (hintEl) hintEl.textContent = 'Applying orientation…';
+                try {
+                    const response = await fetch(routes.cameraView, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ view })
+                    });
+                    const data = await response.json();
+                    if (!response.ok) {
+                        throw new Error(data.error || 'Could not rotate camera');
+                    }
+                    render(data);
+                    const feed = document.getElementById('video-feed');
+                    if (feed) {
+                        feed.src = feed.getAttribute('src').split('?')[0] + '?t=' + Date.now();
+                    }
+                } catch (error) {
+                    if (hintEl) hintEl.textContent = error.message;
+                } finally {
+                    buttons.forEach(button => { button.disabled = !canControlCamera; });
+                }
+            }
+
+            buttons.forEach(button => {
+                button.disabled = !canControlCamera;
+                button.addEventListener('click', () => setView(button.dataset.view));
+            });
+            render({ view: {{ camera_view|tojson }} });
+        })();
+        {% endif %}
+
         {% if daynight_available %}
         // --- Day / Night mode control ---------------------------------------
         (function () {
             const statusEl = document.getElementById('daynight-status');
             const hintEl = document.getElementById('daynight-hint');
-            const buttons = Array.from(document.querySelectorAll('.daynight-btn'));
+            const buttons = Array.from(document.querySelectorAll('#panel-daynight .daynight-btn'));
             if (!buttons.length) return;
 
             const MODE_LABEL = { day: '☀️ Light', night: '🌙 Dark' };
