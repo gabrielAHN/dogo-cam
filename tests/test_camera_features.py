@@ -17,6 +17,7 @@ import types
 import unittest
 from wsgiref.simple_server import WSGIServer, make_server
 from socketserver import ThreadingMixIn
+from unittest.mock import patch
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -366,6 +367,85 @@ class CameraFeatureTest(unittest.TestCase):
         dn = json.loads(body)["daynight"]
         self.assertIn(dn["mode"], ("day", "night"))
         self.assertIn("lux", dn)
+
+    def test_proxy_navigation_uses_configured_external_urls(self):
+        configured = {
+            "DOGCAM_HOME_URL": "https://portal.example/",
+            "DOGCAM_AUTH_SETTINGS_URL": "https://auth.example/settings",
+            "DOGCAM_LOGOUT_URL": "https://auth.example/logout",
+        }
+        with patch.dict(os.environ, configured, clear=False):
+            status, body = self._req("GET", "/")
+
+        self.assertEqual(status, 200)
+        html = body.decode()
+        self.assertIn('href="https://portal.example/">Home</a>', html)
+        self.assertIn(
+            'href="https://auth.example/settings">User settings</a>', html
+        )
+        self.assertIn('href="https://auth.example/logout">Logout</a>', html)
+
+    def test_local_session_does_not_render_proxy_navigation(self):
+        configured = {
+            "DOGCAM_HOME_URL": "https://portal.example/",
+            "DOGCAM_AUTH_SETTINGS_URL": "https://auth.example/settings",
+            "DOGCAM_LOGOUT_URL": "https://auth.example/logout",
+        }
+        with patch.dict(os.environ, configured, clear=False):
+            with self.mod.app.test_client() as client:
+                with client.session_transaction() as local_session:
+                    local_session["logged_in"] = True
+                response = client.get("/")
+
+        self.assertEqual(response.status_code, 200)
+        html = response.get_data(as_text=True)
+        self.assertNotIn("https://portal.example/", html)
+        self.assertNotIn("https://auth.example/settings", html)
+        self.assertNotIn("https://auth.example/logout", html)
+        self.assertIn('href="/logout">Logout</a>', html)
+
+    def test_local_session_takes_precedence_over_proxy_navigation(self):
+        configured = {
+            "DOGCAM_HOME_URL": "https://portal.example/",
+            "DOGCAM_AUTH_SETTINGS_URL": "https://auth.example/settings",
+            "DOGCAM_LOGOUT_URL": "https://auth.example/logout",
+        }
+        headers = {"Remote-User": "test", "Remote-Groups": "admins"}
+        with patch.dict(os.environ, configured, clear=False):
+            with self.mod.app.test_client() as client:
+                with client.session_transaction() as local_session:
+                    local_session["logged_in"] = True
+                response = client.get("/", headers=headers)
+                logout = client.get("/logout", headers=headers)
+                unauthenticated = client.get("/")
+
+        self.assertEqual(response.status_code, 200)
+        html = response.get_data(as_text=True)
+        self.assertNotIn("https://portal.example/", html)
+        self.assertNotIn("https://auth.example/settings", html)
+        self.assertNotIn("https://auth.example/logout", html)
+        self.assertIn('href="/logout">Logout</a>', html)
+        self.assertEqual(logout.status_code, 302)
+        self.assertEqual(logout.headers["Location"], "https://auth.example/logout")
+        self.assertEqual(unauthenticated.status_code, 302)
+        self.assertIn("/login", unauthenticated.headers["Location"])
+
+    def test_proxy_navigation_ignores_headers_when_trust_is_disabled(self):
+        configured = {
+            "TRUST_PROXY_AUTH_HEADERS": "0",
+            "DOGCAM_HOME_URL": "https://portal.example/",
+            "DOGCAM_AUTH_SETTINGS_URL": "https://auth.example/settings",
+            "DOGCAM_LOGOUT_URL": "https://auth.example/logout",
+        }
+        headers = {"Remote-User": "test", "Remote-Groups": "admins"}
+        with patch.dict(os.environ, configured, clear=False):
+            with self.mod.app.test_request_context("/", headers=headers):
+                navigation = self.mod.navigation_urls()
+
+        self.assertEqual(
+            navigation,
+            {"home_url": "", "auth_settings_url": "", "logout_url": ""},
+        )
 
     def test_index_page_has_daynight_controls(self):
         # The settings modal should render the auto/day/night buttons and wire

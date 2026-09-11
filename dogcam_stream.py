@@ -1,7 +1,7 @@
 import io
 import os
-import time
 import threading
+import time
 import atexit
 import logging
 from datetime import timedelta
@@ -540,6 +540,26 @@ def logout_redirect_url():
     return url_for("index")
 
 
+def navigation_urls():
+    if session.get("logged_in"):
+        return {
+            "home_url": "",
+            "auth_settings_url": "",
+            "logout_url": url_for("logout"),
+        }
+    if authelia_user():
+        return {
+            "home_url": env_url("DOGCAM_HOME_URL"),
+            "auth_settings_url": env_url("DOGCAM_AUTH_SETTINGS_URL"),
+            "logout_url": env_url("DOGCAM_LOGOUT_URL"),
+        }
+    return {
+        "home_url": "",
+        "auth_settings_url": "",
+        "logout_url": "",
+    }
+
+
 def camera_control_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
@@ -864,6 +884,7 @@ def gen_with_viewer_slot():
 @login_required
 def index():
     dog_name = os.getenv("DOG_NAME", "Dog")
+    navigation = navigation_urls()
     return render_template(
         "index.html",
         dog_name=dog_name,
@@ -871,10 +892,8 @@ def index():
         servo_available=servo_available and can_control_camera(),
         daynight_available=camera_available and DAYNIGHT_ENABLED,
         can_control_camera=can_control_camera(),
-        home_url=env_url("DOGCAM_HOME_URL", "/"),
-        auth_settings_url=env_url("DOGCAM_AUTH_SETTINGS_URL"),
-        logout_url=url_for("logout"),
         camera_view=camera_view(),
+        **navigation,
     )
 
 
