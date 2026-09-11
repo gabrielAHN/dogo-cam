@@ -11,12 +11,14 @@ import http.client
 import os
 import socket
 import sys
+import tempfile
 import threading
 import time
 import types
 import unittest
-from wsgiref.simple_server import WSGIServer, make_server
 from socketserver import ThreadingMixIn
+from unittest.mock import patch
+from wsgiref.simple_server import WSGIServer, make_server
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -190,6 +192,190 @@ class CameraFeatureTest(unittest.TestCase):
         self.assertEqual(info["height"], 972)
         self.assertEqual(info["max_fps"], 15)
         self.assertIn("zoom", info)
+
+    def test_camera_view_post_reconfigures_and_persists(self):
+        import json
+
+        with tempfile.TemporaryDirectory() as directory:
+            state_file = os.path.join(directory, "camera-view.json")
+            with patch.object(
+                self.mod, "CAMERA_VIEW_STATE_FILE", state_file, create=True
+            ):
+                try:
+                    status, body = self._req(
+                        "POST",
+                        "/camera/view",
+                        body=json.dumps({"view": "upside_down"}),
+                    )
+                    self.assertEqual(status, 200)
+                    self.assertEqual(json.loads(body)["view"], "upside_down")
+                    with open(state_file) as persisted:
+                        self.assertEqual(
+                            json.load(persisted), {"view": "upside_down"}
+                        )
+                    self.assertEqual(self.mod.camera_view(), "upside_down")
+                    transform = self.hw["instances"][-1].configured["transform"]
+                    self.assertEqual(
+                        transform.kw, {"hflip": True, "vflip": True}
+                    )
+                finally:
+                    self._req(
+                        "POST",
+                        "/camera/view",
+                        body=json.dumps({"view": "normal"}),
+                    )
+
+    def test_camera_view_changes_are_serialized(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state_file = os.path.join(directory, "camera-view.json")
+            events = []
+            events_lock = threading.Lock()
+            first_saved = threading.Event()
+            second_saved = threading.Event()
+            original_save = self.mod.save_camera_view
+
+            def tracked_save(view):
+                result = original_save(view)
+                with events_lock:
+                    events.append(("save", result))
+                    save_count = sum(kind == "save" for kind, _ in events)
+                if save_count == 1:
+                    first_saved.set()
+                    second_saved.wait(0.3)
+                else:
+                    second_saved.set()
+                return result
+
+            def tracked_restart(_reason):
+                with events_lock:
+                    events.append(("restart", self.mod.camera_view()))
+                return True
+
+            responses = []
+
+            def post(view):
+                with self.mod.app.test_client() as client:
+                    response = client.post(
+                        "/camera/view",
+                        headers={"Remote-User": "test", "Remote-Groups": "admins"},
+                        json={"view": view},
+                    )
+                    responses.append((view, response.status_code, response.get_json()))
+
+            with (
+                patch.object(self.mod, "CAMERA_VIEW_STATE_FILE", state_file),
+                patch.object(self.mod, "save_camera_view", side_effect=tracked_save),
+                patch.object(self.mod, "restart_camera", side_effect=tracked_restart),
+                patch.dict(os.environ, {"DOGCAM_CAMERA_VIEW": "normal"}),
+            ):
+                first = threading.Thread(target=post, args=("upside_down",))
+                second = threading.Thread(target=post, args=("normal",))
+                first.start()
+                self.assertTrue(first_saved.wait(1))
+                second.start()
+                first.join(2)
+                second.join(2)
+
+            self.assertFalse(first.is_alive())
+            self.assertFalse(second.is_alive())
+            self.assertEqual([status for _, status, _ in responses], [200, 200])
+            self.assertEqual(
+                [kind for kind, _ in events],
+                ["save", "restart", "save", "restart"],
+            )
+            self.assertEqual(events[0][1], events[1][1])
+            self.assertEqual(events[2][1], events[3][1])
+
+    def test_camera_view_state_file_is_private_during_write(self):
+        import json
+        import stat
+
+        with tempfile.TemporaryDirectory() as directory:
+            state_file = os.path.join(directory, "camera-view.json")
+            observed_modes = []
+            original_dump = self.mod.json.dump
+
+            def inspect_mode(data, destination):
+                observed_modes.append(
+                    stat.S_IMODE(os.fstat(destination.fileno()).st_mode)
+                )
+                return original_dump(data, destination)
+
+            with (
+                patch.object(self.mod, "CAMERA_VIEW_STATE_FILE", state_file),
+                patch.object(self.mod.json, "dump", side_effect=inspect_mode),
+            ):
+                self.mod.save_camera_view("upside_down")
+
+            self.assertEqual(observed_modes, [0o600])
+            with open(state_file) as persisted:
+                self.assertEqual(json.load(persisted), {"view": "upside_down"})
+
+    def test_camera_view_post_rejects_invalid_payloads(self):
+        invalid_payloads = (
+            (None, None),
+            (b"not-json", "application/json"),
+            (b"{}", "application/json"),
+            (b"null", "application/json"),
+            (b'{"view":null}', "application/json"),
+            (b'{"view":""}', "application/json"),
+            (b'{"view":"180"}', "application/json"),
+            (b'{"view":"inverted"}', "application/json"),
+        )
+        headers = {"Remote-User": "test", "Remote-Groups": "admins"}
+        with tempfile.TemporaryDirectory() as directory:
+            state_file = os.path.join(directory, "camera-view.json")
+            with patch.object(self.mod, "CAMERA_VIEW_STATE_FILE", state_file):
+                for body, content_type in invalid_payloads:
+                    with self.subTest(body=body):
+                        with self.mod.app.test_client() as client:
+                            response = client.post(
+                                "/camera/view",
+                                headers=headers,
+                                data=body,
+                                content_type=content_type,
+                            )
+                        self.assertEqual(response.status_code, 400)
+                self.assertFalse(os.path.exists(state_file))
+
+    def test_camera_view_post_fails_if_directory_sync_fails(self):
+        import json
+
+        with tempfile.TemporaryDirectory() as directory:
+            state_file = os.path.join(directory, "camera-view.json")
+            with (
+                patch.object(self.mod, "CAMERA_VIEW_STATE_FILE", state_file),
+                patch.object(
+                    self.mod.os,
+                    "fsync",
+                    side_effect=(None, OSError("directory sync failed")),
+                ),
+                patch.object(self.mod, "restart_camera") as restart,
+            ):
+                status, body = self._req(
+                    "POST",
+                    "/camera/view",
+                    body=json.dumps({"view": "upside_down"}),
+                )
+
+            self.assertEqual(status, 500)
+            self.assertIn("persist", json.loads(body)["error"].lower())
+            restart.assert_not_called()
+
+    def test_camera_view_post_requires_control_permission(self):
+        import json
+
+        with tempfile.TemporaryDirectory() as directory:
+            state_file = os.path.join(directory, "camera-view.json")
+            with patch.object(self.mod, "CAMERA_VIEW_STATE_FILE", state_file):
+                status, _ = self._req(
+                    "POST",
+                    "/camera/view",
+                    body=json.dumps({"view": "upside_down"}),
+                    admin=False,
+                )
+                self.assertEqual(status, 403)
+                self.assertFalse(os.path.exists(state_file))
 
     # ---- tuning ----
     def test_tuning_controls_applied_at_init(self):
@@ -366,6 +552,98 @@ class CameraFeatureTest(unittest.TestCase):
         dn = json.loads(body)["daynight"]
         self.assertIn(dn["mode"], ("day", "night"))
         self.assertIn("lux", dn)
+
+    def test_proxy_navigation_excludes_user_settings(self):
+        configured = {
+            "DOGCAM_HOME_URL": "https://portal.example/",
+            "DOGCAM_LOGOUT_URL": "https://auth.example/logout",
+        }
+        with patch.dict(os.environ, configured, clear=False):
+            status, body = self._req("GET", "/")
+
+        self.assertEqual(status, 200)
+        html = body.decode()
+        self.assertIn('href="https://portal.example/">Home</a>', html)
+        self.assertNotIn("User settings", html)
+        self.assertIn('href="https://auth.example/logout">Logout</a>', html)
+
+    def test_local_session_does_not_render_proxy_navigation(self):
+        configured = {
+            "DOGCAM_HOME_URL": "https://portal.example/",
+            "DOGCAM_LOGOUT_URL": "https://auth.example/logout",
+        }
+        with patch.dict(os.environ, configured, clear=False):
+            with self.mod.app.test_client() as client:
+                with client.session_transaction() as local_session:
+                    local_session["logged_in"] = True
+                response = client.get("/")
+
+        self.assertEqual(response.status_code, 200)
+        html = response.get_data(as_text=True)
+        self.assertNotIn("https://portal.example/", html)
+        self.assertNotIn("https://auth.example/logout", html)
+        self.assertIn('href="/logout">Logout</a>', html)
+
+    def test_local_session_takes_precedence_over_proxy_navigation(self):
+        configured = {
+            "DOGCAM_HOME_URL": "https://portal.example/",
+            "DOGCAM_LOGOUT_URL": "https://auth.example/logout",
+        }
+        headers = {"Remote-User": "test", "Remote-Groups": "admins"}
+        with patch.dict(os.environ, configured, clear=False):
+            with self.mod.app.test_client() as client:
+                with client.session_transaction() as local_session:
+                    local_session["logged_in"] = True
+                response = client.get("/", headers=headers)
+                logout = client.get("/logout", headers=headers)
+                unauthenticated = client.get("/")
+
+        self.assertEqual(response.status_code, 200)
+        html = response.get_data(as_text=True)
+        self.assertNotIn("https://portal.example/", html)
+        self.assertNotIn("https://auth.example/logout", html)
+        self.assertIn('href="/logout">Logout</a>', html)
+        self.assertEqual(logout.status_code, 302)
+        self.assertEqual(logout.headers["Location"], "https://auth.example/logout")
+        self.assertEqual(unauthenticated.status_code, 302)
+        self.assertIn("/login", unauthenticated.headers["Location"])
+
+    def test_proxy_navigation_ignores_headers_when_trust_is_disabled(self):
+        configured = {
+            "TRUST_PROXY_AUTH_HEADERS": "0",
+            "DOGCAM_HOME_URL": "https://portal.example/",
+            "DOGCAM_LOGOUT_URL": "https://auth.example/logout",
+        }
+        headers = {"Remote-User": "test", "Remote-Groups": "admins"}
+        with patch.dict(os.environ, configured, clear=False):
+            with self.mod.app.test_request_context("/", headers=headers):
+                navigation = self.mod.navigation_urls()
+
+        self.assertEqual(
+            navigation,
+            {"home_url": "", "logout_url": ""},
+        )
+
+    def test_settings_modal_has_camera_view_controls(self):
+        status, body = self._req("GET", "/")
+        self.assertEqual(status, 200)
+        html = body.decode()
+        for marker in (
+            'id="panel-camera-view"',
+            'id="view-normal"',
+            'id="view-upside-down"',
+            'cameraView: "/camera/view"',
+        ):
+            self.assertIn(marker, html, marker)
+
+    def test_camera_view_buttons_are_not_bound_to_daynight_controls(self):
+        status, body = self._req("GET", "/")
+        self.assertEqual(status, 200)
+        html = body.decode()
+        self.assertIn(
+            "querySelectorAll('#panel-daynight .daynight-btn')", html
+        )
+        self.assertNotIn("querySelectorAll('.daynight-btn')", html)
 
     def test_index_page_has_daynight_controls(self):
         # The settings modal should render the auto/day/night buttons and wire
