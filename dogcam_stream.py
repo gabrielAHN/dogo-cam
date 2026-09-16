@@ -44,11 +44,18 @@ if env_flag("TRUST_PROXY_HEADERS"):
     proxy_prefix_count = 1 if env_flag("TRUST_PROXY_PREFIX_HEADERS") else 0
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=proxy_prefix_count)
 viewer_semaphore = threading.Semaphore(int(os.getenv("MAX_VIEWERS", 3)))
+viewer_slots_in_use = 0
 
 camera = None
 camera_available = False
 camera_running = False
 camera_lock = threading.Lock()
+active_viewers = 0
+snapshot_demands = 0
+_idle_stop_timer = None
+_idle_stop_generation = 0
+_jpeg_encoder_factory = None
+_file_output_factory = None
 
 dht_device = None
 dht_lock = threading.Lock()
@@ -108,9 +115,17 @@ class StreamingOutput(io.BufferedIOBase):
                 return last_id, None
             return self.frame_id, self.frame
 
+    def clear(self):
+        """Discard cached JPEG data while preserving a monotonic frame id."""
+        with self.condition:
+            self.frame = None
+            self.frame_id += 1
+            self.last_frame_at = 0.0
+            self.condition.notify_all()
+
     def seconds_since_frame(self):
         with self.condition:
-            if self.frame_id == 0:
+            if self.frame is None:
                 return None
             return time.monotonic() - self.last_frame_at
 
@@ -126,6 +141,7 @@ output = StreamingOutput()
 STREAM_FRAME_TIMEOUT = float(os.getenv("STREAM_FRAME_TIMEOUT", "5"))
 STREAM_STALL_RESTART_AFTER = float(os.getenv("STREAM_STALL_RESTART_AFTER", "20"))
 STREAM_STALL_CHECK_INTERVAL = float(os.getenv("STREAM_STALL_CHECK_INTERVAL", "5"))
+STREAM_IDLE_TIMEOUT = max(0.0, float(os.getenv("STREAM_IDLE_TIMEOUT", "10")))
 
 
 # ---------------------------------------------------------------------------
@@ -637,11 +653,14 @@ def camera_control_required(f):
     return decorated_function
 
 
-def init_camera():
+def _init_camera_locked():
+    """Configure the camera without starting acquisition. Caller holds camera_lock."""
     global camera
     global camera_available
     global camera_running
     global current_mode
+    global _jpeg_encoder_factory
+    global _file_output_factory
 
     if camera is not None:
         return camera_available
@@ -651,6 +670,9 @@ def init_camera():
         from picamera2 import Picamera2
         from picamera2.encoders import JpegEncoder
         from picamera2.outputs import FileOutput
+
+        _jpeg_encoder_factory = JpegEncoder
+        _file_output_factory = FileOutput
 
         logger.info("Attempting to initialize camera")
         # NoIR camera: load the NoIR-specific libcamera tuning file so the ISP's
@@ -687,7 +709,6 @@ def init_camera():
             controls={"FrameDurationLimits": (frame_us, frame_us)},
         )
         camera.configure(config)
-        camera.start_recording(JpegEncoder(), FileOutput(output))
         # Image mode (day colour / night grayscale). Day mode carries the user's
         # image tuning (sharpness/contrast/saturation/AWB/NR/EV) -- all ISP-side,
         # no measurable extra power. Applied inline (init_camera may run while
@@ -722,9 +743,9 @@ def init_camera():
         except Exception as _afe:
             logger.debug(f"Autofocus not available (fixed-focus camera?): {_afe}")
         camera_available = True
-        camera_running = True
+        camera_running = False
         logger.info(
-            f"Camera initialized: {STREAM_WIDTH}x{STREAM_HEIGHT} @<= {max_fps}fps, "
+            f"Camera configured (idle): {STREAM_WIDTH}x{STREAM_HEIGHT} @<= {max_fps}fps, "
             f"{view} view, zoom {current_zoom:.2f}x"
         )
         return True
@@ -735,18 +756,144 @@ def init_camera():
         return False
 
 
+def init_camera():
+    with camera_lock:
+        return _init_camera_locked()
+
+
+def _total_demand_locked():
+    return active_viewers + snapshot_demands
+
+
+def _invalidate_idle_stop_locked():
+    global _idle_stop_timer, _idle_stop_generation
+    _idle_stop_generation += 1
+    if _idle_stop_timer is not None:
+        _idle_stop_timer.cancel()
+        _idle_stop_timer = None
+
+
+def _start_recording_locked():
+    global camera_running
+    if camera_running:
+        return True
+    if not camera_available or camera is None:
+        return False
+    output.clear()
+    try:
+        camera.start_recording(_jpeg_encoder_factory(), _file_output_factory(output))
+    except Exception as error:
+        logger.error(f"Camera recording start failed: {error}")
+        camera_running = False
+        return False
+    camera_running = True
+    _mark_camera_started()
+    logger.info("Camera recording started on demand")
+    return True
+
+
+def _stop_recording_locked():
+    global camera_running
+    if not camera_running or camera is None:
+        return
+    try:
+        camera.stop_recording()
+    except Exception as error:
+        logger.warning(f"Camera recording stop failed: {error}")
+    finally:
+        camera_running = False
+        output.clear()
+    logger.info("Camera recording stopped after idle timeout")
+
+
+def _idle_stop_callback(generation):
+    global _idle_stop_timer
+    with camera_lock:
+        if generation != _idle_stop_generation or _total_demand_locked() != 0:
+            return
+        _idle_stop_timer = None
+        _stop_recording_locked()
+
+
+def _schedule_idle_stop_locked():
+    global _idle_stop_timer
+    _invalidate_idle_stop_locked()
+    generation = _idle_stop_generation
+    if STREAM_IDLE_TIMEOUT == 0:
+        _stop_recording_locked()
+        return
+    _idle_stop_timer = threading.Timer(
+        STREAM_IDLE_TIMEOUT, _idle_stop_callback, args=(generation,)
+    )
+    _idle_stop_timer.daemon = True
+    _idle_stop_timer.start()
+
+
+class StreamDemandLease:
+    """One idempotently releasable viewer or snapshot demand."""
+
+    def __init__(self, kind, frame_id):
+        self.kind = kind
+        self.frame_id = frame_id
+        self._released = False
+        self._lock = threading.Lock()
+
+    def release(self):
+        with self._lock:
+            if self._released:
+                return
+            self._released = True
+        release_stream_demand(self.kind)
+
+
+def acquire_stream_demand(kind):
+    global active_viewers, snapshot_demands
+    if kind not in {"viewer", "snapshot"}:
+        raise ValueError(f"Unsupported stream demand: {kind}")
+    with camera_lock:
+        _invalidate_idle_stop_locked()
+        if kind == "viewer":
+            active_viewers += 1
+        else:
+            snapshot_demands += 1
+        if not _start_recording_locked():
+            if kind == "viewer":
+                active_viewers -= 1
+            else:
+                snapshot_demands -= 1
+            return None
+        frame_id = output.frame_id
+    return StreamDemandLease(kind, frame_id)
+
+
+def release_stream_demand(kind):
+    global active_viewers, snapshot_demands
+    with camera_lock:
+        if kind == "viewer":
+            active_viewers = max(0, active_viewers - 1)
+        else:
+            snapshot_demands = max(0, snapshot_demands - 1)
+        if _total_demand_locked() == 0:
+            _schedule_idle_stop_locked()
+
+
 def _teardown_camera():
     """Best-effort stop+close of the current Picamera2 instance. Caller holds camera_lock."""
     global camera, camera_running
     if camera is None:
         return
-    for step in ("stop_recording", "close"):
+    if camera_running:
         try:
-            getattr(camera, step)()
+            camera.stop_recording()
         except Exception as e:
-            logger.warning(f"Camera {step} during restart failed: {e}")
+            logger.warning(f"Camera stop_recording during restart failed: {e}")
+    try:
+        camera.close()
+    except Exception as e:
+        logger.warning(f"Camera close during restart failed: {e}")
     camera = None
     camera_running = False
+    output.clear()
 
 
 def restart_camera(reason):
@@ -759,15 +906,20 @@ def restart_camera(reason):
     """
     with camera_lock:
         logger.warning(f"Restarting camera pipeline: {reason}")
+        demanded = _total_demand_locked() > 0
         _teardown_camera()
-        ok = init_camera()
+        ok = _init_camera_locked()
+        if ok and demanded:
+            ok = _start_recording_locked()
         logger.warning(f"Camera pipeline restart {'succeeded' if ok else 'FAILED'}")
         return ok
 
 
 def stream_is_stalled():
     """True when the camera claims to be running but frames stopped arriving."""
-    if not camera_available or not camera_running or not get_stream_state():
+    with camera_lock:
+        demanded = _total_demand_locked() > 0
+    if not demanded or not camera_available or not camera_running or not get_stream_state():
         return False
     age = output.seconds_since_frame()
     if age is None:
@@ -846,6 +998,7 @@ def cleanup():
     global camera_running
 
     with camera_lock:
+        _invalidate_idle_stop_locked()
         if camera_running and camera is not None:
             try:
                 camera.stop_recording()
@@ -858,7 +1011,6 @@ def cleanup():
 
 
 init_camera()
-_mark_camera_started()
 
 if servo_available and servo_controller:
     servo_controller.initialize()
@@ -915,7 +1067,7 @@ def logout():
     return redirect(url_for("login"))
 
 
-def gen():
+def gen(lease=None):
     """MJPEG frame generator.
 
     Bounded waits: if no new frame arrives within STREAM_FRAME_TIMEOUT the
@@ -924,25 +1076,19 @@ def gen():
     forever, so a stalled camera wedged one thread per request until the app
     stopped answering entirely.
     """
-    last_id = 0
-    while True:
-        if not camera_available or not camera_running:
-            return
-        last_id, frame = output.wait_for_frame(last_id, STREAM_FRAME_TIMEOUT)
-        if frame is None:
-            logger.warning(f"video_feed: no frame for {STREAM_FRAME_TIMEOUT:.0f}s, closing stream")
-            return
-        yield b"--frame\r\n" b"Content-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
-
-
-def gen_with_viewer_slot():
-    """Hold the viewer semaphore for the lifetime of the stream, not just the
-    handler call. The old code released it in a `finally` before the generator
-    ran, so MAX_VIEWERS was never actually enforced."""
+    last_id = lease.frame_id if lease is not None else output.frame_id
     try:
-        yield from gen()
+        while True:
+            if not camera_available or not camera_running:
+                return
+            last_id, frame = output.wait_for_frame(last_id, STREAM_FRAME_TIMEOUT)
+            if frame is None:
+                logger.warning(f"video_feed: no frame for {STREAM_FRAME_TIMEOUT:.0f}s, closing stream")
+                return
+            yield b"--frame\r\n" b"Content-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
     finally:
-        viewer_semaphore.release()
+        if lease is not None:
+            lease.release()
 
 
 @app.route("/")
@@ -965,19 +1111,43 @@ def index():
 @app.route("/video_feed")
 @login_required
 def video_feed():
+    global viewer_slots_in_use
     if not get_stream_state():
         return "Stream is currently disabled. Press the button to enable.", 503
     if not camera_available:
         return "Camera not available. Please check camera connection.", 503
-    # Fail fast when the pipeline is stalled instead of holding the connection
-    # open for nothing; the client retries and the stall monitor restarts the camera.
-    age = output.seconds_since_frame()
-    if age is not None and age > STREAM_FRAME_TIMEOUT:
-        return "Camera stream stalled; recovering.", 503, {"Retry-After": "3"}
     if not viewer_semaphore.acquire(blocking=False):
         return "Max viewers reached. Try again later.", 503
-    # The generator releases the slot when the stream ends (see gen_with_viewer_slot).
-    return Response(gen_with_viewer_slot(), mimetype="multipart/x-mixed-replace; boundary=frame")
+    viewer_slots_in_use += 1
+    lease = acquire_stream_demand("viewer")
+    if lease is None:
+        viewer_slots_in_use -= 1
+        viewer_semaphore.release()
+        return "Camera not available or recording failed.", 503
+
+    slot_lock = threading.Lock()
+    slot_released = False
+
+    def release_all():
+        nonlocal slot_released
+        global viewer_slots_in_use
+        lease.release()
+        with slot_lock:
+            if slot_released:
+                return
+            slot_released = True
+            viewer_slots_in_use = max(0, viewer_slots_in_use - 1)
+            viewer_semaphore.release()
+
+    def stream():
+        try:
+            yield from gen(lease)
+        finally:
+            release_all()
+
+    response = Response(stream(), mimetype="multipart/x-mixed-replace; boundary=frame")
+    response.call_on_close(release_all)
+    return response
 
 
 @app.route("/stream_health")
@@ -985,11 +1155,32 @@ def video_feed():
 def stream_health():
     """Machine-readable stream health for the UI and external watchdogs."""
     age = output.seconds_since_frame()
-    healthy = camera_available and camera_running and age is not None and age <= STREAM_FRAME_TIMEOUT
+    with camera_lock:
+        viewers = active_viewers
+        demands = _total_demand_locked()
+        running = camera_running
+    enabled = get_stream_state()
+    if not enabled:
+        state = "disabled"
+        healthy = True
+    elif demands == 0:
+        state = "cooldown" if running else ("idle" if camera_available else "unavailable")
+        healthy = True
+    elif not camera_available or not running:
+        state = "unavailable"
+        healthy = False
+    elif age is None or age > STREAM_FRAME_TIMEOUT:
+        state = "stalled"
+        healthy = False
+    else:
+        state = "active"
+        healthy = True
     body = {
         "camera_available": camera_available,
-        "camera_running": camera_running,
-        "stream_enabled": get_stream_state(),
+        "camera_running": running,
+        "stream_enabled": enabled,
+        "state": state,
+        "viewers": viewers,
         "frames": output.frame_id,
         "last_frame_age_s": None if age is None else round(age, 1),
         "healthy": healthy,
@@ -1095,6 +1286,12 @@ def stream_status():
         return "⚠️ Camera Not Connected"
     if not get_stream_state():
         return "🔴 Stream Paused"
+    if not camera_running:
+        return "⚪ Stream Idle"
+    with camera_lock:
+        demanded = _total_demand_locked() > 0
+    if not demanded:
+        return "⚪ Stream Cooling Down"
     age = output.seconds_since_frame()
     if age is None or age > STREAM_FRAME_TIMEOUT:
         return "🟡 Stream Stalled — reconnecting…"
@@ -1231,22 +1428,21 @@ def camera_zoom():
 @app.route("/snapshot")
 @login_required
 def snapshot():
-    """Return the latest stream frame as a still JPEG.
-
-    Serves the frame the MJPEG pipeline already produced, so it costs no extra
-    camera work or power (no full-res still capture, which would stop the stream
-    and spike the 5V rail). Good enough for 'grab a photo of the dog'.
-    """
+    """Temporarily demand recording and return a frame newer than this request."""
     if not camera_available:
         return "Camera not available", 503
-    _id, frame = output.wait_for_frame(0, STREAM_FRAME_TIMEOUT)
-    if frame is None:
-        frame = output.frame
-    if not frame:
-        return "No frame available yet", 503, {"Retry-After": "2"}
-    filename = f"dogcam_{time.strftime('%Y%m%d_%H%M%S')}.jpg"
-    return Response(bytes(frame), mimetype="image/jpeg",
-                    headers={"Content-Disposition": f'inline; filename="{filename}"'})
+    lease = acquire_stream_demand("snapshot")
+    if lease is None:
+        return "Camera not available or recording failed", 503
+    try:
+        _id, frame = output.wait_for_frame(lease.frame_id, STREAM_FRAME_TIMEOUT)
+        if not frame:
+            return "No fresh frame available yet", 503, {"Retry-After": "2"}
+        filename = f"dogcam_{time.strftime('%Y%m%d_%H%M%S')}.jpg"
+        return Response(bytes(frame), mimetype="image/jpeg",
+                        headers={"Content-Disposition": f'inline; filename="{filename}"'})
+    finally:
+        lease.release()
 
 
 @app.route("/servo/move", methods=["POST"])
