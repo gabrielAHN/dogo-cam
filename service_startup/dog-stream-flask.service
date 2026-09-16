@@ -7,7 +7,9 @@ User=your-user
 StateDirectory=dogcam
 WorkingDirectory=/home/your-user/dogo-cam
 EnvironmentFile=-/home/your-user/dogo-cam/.env
-ExecStart=/home/your-user/.local/bin/uv run gunicorn --worker-class gthread --workers 1 --threads 4 --bind 0.0.0.0:5000 dogcam_stream:app
+# MJPEG responses hold one thread for their entire lifetime. Keep at least two
+# threads beyond MAX_VIEWERS so servo controls and health checks stay responsive.
+ExecStart=/home/your-user/.local/bin/uv run gunicorn --worker-class gthread --workers 1 --threads 6 --bind 0.0.0.0:5000 dogcam_stream:app
 Restart=always
 RestartSec=10
 # Don't let a hung camera cleanup wedge the stop in 'deactivating' for 90s;

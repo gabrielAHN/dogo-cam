@@ -49,6 +49,7 @@ SECRET_KEY=replace_me
 MAX_VIEWERS=3
 PORT=5000
 STREAM_MAX_FPS=15          # framerate cap; lower = less power draw (see Power & stability)
+STREAM_IDLE_TIMEOUT=10      # stop acquisition/encoding after the final viewer leaves
 STREAM_WIDTH=1296          # stream resolution (default 1296x972, was 640x480)
 STREAM_HEIGHT=972          #   1080p works but VGA/960p are gentler on the 5V rail
 DOG_NAME=Kotaro
@@ -97,7 +98,7 @@ All image tuning (`CAM_*`), day/night switching and digital zoom are **ISP‑sid
 | `/camera/view` | GET / POST | read / set persisted orientation `{"view":"normal\|upside_down"}`; changes restart the camera pipeline |
 | `/camera/daynight` | GET / POST | read status / set override `{"mode":"auto\|day\|night"}` |
 | `/camera/zoom` | GET / POST | read / set digital zoom `{"zoom":2.0}` or `{"step":0.5}` |
-| `/snapshot` | GET | latest frame as a still JPEG (serves the live frame — no extra capture) |
+| `/snapshot` | GET | fresh frame as a still JPEG (temporarily starts an idle camera) |
 
 **In the web UI**, the ⚙ settings button opens Camera Controls. The **Camera orientation** row switches between **Normal** and **Rotate 180°**, restarts the camera pipeline to apply the transform, and persists the choice across service restarts and reboots. The **Day / Night** row provides **🔄 Auto** (follow the light sensor, the default), **☀️ Light** (force colour), and **🌙 Dark** (force grayscale). Camera-control permission (`DOGCAM_CONTROL_GROUPS`) is required to change either setting; everyone else sees them read-only.
 
@@ -167,7 +168,7 @@ sudo apt install -y libgpiod2 libcamera-apps-lite python3-picamera2 python3-dev
 git clone <your-repo-url> dogo-cam && cd dogo-cam
 curl -LsSf https://astral.sh/uv/install.sh | sh      # ensure ~/.local/bin is on PATH
 uv sync
-uv run gunicorn --worker-class gthread --workers 1 --threads 4 --bind 0.0.0.0:5000 dogcam_stream:app
+uv run gunicorn --worker-class gthread --workers 1 --threads 6 --bind 0.0.0.0:5000 dogcam_stream:app
 ```
 
 Then open `http://<pi-ip>:5000`.
@@ -205,13 +206,14 @@ Existing installations must reinstall both files after updating the repository; 
 A Pi 3B funnels all current through its micro‑USB / polyfuse (~2–2.5A), so camera + MJPEG encoding + servos can brown out the 5V rail (under‑voltage) even with a strong supply — the camera stalls or the app hangs.
 
 - **`STREAM_MAX_FPS`** (default 15) caps the framerate to cut peak draw — the biggest lever (`vcgencmd get_throttled` non‑zero = dips).
+- Camera acquisition and JPEG encoding are demand-driven: startup configures the camera but leaves it idle; the first visible viewer (or `/snapshot`) starts recording, and `STREAM_IDLE_TIMEOUT` (default 10s) stops it after the final viewer disconnects while keeping the camera configured for a quick restart. Hidden/page-hidden browser tabs close their MJPEG connection and reconnect immediately when visible.
 - Single‑shot autofocus at startup (imx708) avoids continuous AF‑motor draw and PDAF log spam.
 - Real fix: power the servos from a **separate 5V** (common ground), or use a Pi 4/5.
 - **Self‑healing (three layers):**
-  1. `/video_feed` gives up after `STREAM_FRAME_TIMEOUT` (5s) without a frame, so a stalled camera can't pin gunicorn's 4 threads and take the whole app down (this was the "open the camera page → everything crashes" loop). The page reconnects the `<img>` automatically and shows *🟡 Stream Stalled* meanwhile.
+  1. `/video_feed` gives up after `STREAM_FRAME_TIMEOUT` (5s) without a frame. Gunicorn also reserves request capacity beyond `MAX_VIEWERS`, so healthy long-lived MJPEG streams cannot starve servo controls or health checks. The page reconnects the `<img>` automatically and shows *🟡 Stream Stalled* meanwhile.
   2. If no frames arrive for `STREAM_STALL_RESTART_AFTER` (20s) the app tears down and re‑creates the Picamera2 pipeline in‑process — no service restart, the UI stays up.
   3. `dogcam-watchdog.timer` restarts the *service* only if the app is dead, or if `/stream_health` stays 503 past `STALL_ESCALATE_SECONDS` (120s). `dog-stream.service` uses `TimeoutStopSec=15` + `KillMode=mixed` so a stuck camera cleanup can't wedge it in `deactivating`.
-- `GET /stream_health` → `{"healthy", "frames", "last_frame_age_s", ...}` (200/503) for dashboards and external monitors.
+- `GET /stream_health` → `{"state", "viewers", "healthy", "frames", "last_frame_age_s", ...}` for dashboards and external monitors. Intentional `idle`, `cooldown`, and `disabled` states return 200; demanded stalls/unavailability return 503.
 - Blank feed but `camera_status` says available → reseat the **CSI ribbon** (a loose cable gives "Camera frontend timed out" / zero frames while the sensor still enumerates on I²C). Check `journalctl -u dog-stream | grep -i "Restarting camera"` to see how often the pipeline is stalling.
 - Tests: `python3 -m unittest tests.test_stream_stall` runs the app off‑Pi with stubbed camera libs and reproduces the thread‑exhaustion bug.
 
