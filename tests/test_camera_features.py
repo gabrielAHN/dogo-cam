@@ -438,9 +438,15 @@ class CameraFeatureTest(unittest.TestCase):
         self._req("POST", "/camera/zoom", body=json.dumps({"zoom": 1.0}))
 
     # ---- snapshot ----
-    def test_snapshot_returns_latest_frame_as_jpeg(self):
-        self.mod.output.write(b"\xff\xd8snapshot\xff\xd9")
+    def test_snapshot_returns_fresh_frame_as_jpeg(self):
+        def emit_fresh_frame():
+            self._wait_for(lambda: self.mod.snapshot_demands == 1, 1)
+            self.mod.output.write(b"\xff\xd8snapshot\xff\xd9")
+
+        producer = threading.Thread(target=emit_fresh_frame)
+        producer.start()
         status, body = self._req("GET", "/snapshot")
+        producer.join(1)
         self.assertEqual(status, 200)
         self.assertTrue(body.startswith(b"\xff\xd8"))
 
@@ -472,20 +478,24 @@ class CameraFeatureTest(unittest.TestCase):
 
     def test_auto_switch_follows_lux_with_hysteresis(self):
         import json
+        lease = self.mod.acquire_stream_demand("snapshot")
         # back to auto
-        self._req("POST", "/camera/daynight", body=json.dumps({"mode": "auto"}))
-        # simulate darkness -> should flip to night within a few check cycles
-        self.hw["lux"] = 2.0
-        self._wait_for(lambda: self.mod.current_mode == "night", 5)
-        self.assertEqual(self.mod.current_mode, "night")
-        # a value inside the hysteresis band must NOT flip it back
-        self.hw["lux"] = 8.0  # between NIGHT_LUX(5) and DAY_LUX(12)
-        time.sleep(1.5)
-        self.assertEqual(self.mod.current_mode, "night", "hysteresis band should hold mode")
-        # bright -> back to day
-        self.hw["lux"] = 300.0
-        self._wait_for(lambda: self.mod.current_mode == "day", 5)
-        self.assertEqual(self.mod.current_mode, "day")
+        try:
+            self._req("POST", "/camera/daynight", body=json.dumps({"mode": "auto"}))
+            # simulate darkness -> should flip to night within a few check cycles
+            self.hw["lux"] = 2.0
+            self._wait_for(lambda: self.mod.current_mode == "night", 5)
+            self.assertEqual(self.mod.current_mode, "night")
+            # a value inside the hysteresis band must NOT flip it back
+            self.hw["lux"] = 8.0  # between NIGHT_LUX(5) and DAY_LUX(12)
+            time.sleep(1.5)
+            self.assertEqual(self.mod.current_mode, "night", "hysteresis band should hold mode")
+            # bright -> back to day
+            self.hw["lux"] = 300.0
+            self._wait_for(lambda: self.mod.current_mode == "day", 5)
+            self.assertEqual(self.mod.current_mode, "day")
+        finally:
+            lease.release()
 
     def test_lit_room_recovers_from_night_to_day(self):
         """Regression: stuck in grayscale while the room is clearly lit.
@@ -494,14 +504,18 @@ class CameraFeatureTest(unittest.TestCase):
         from night MUST recover to colour, not stay grayscale.
         """
         import json
-        # Force night, then hand control back to auto with a well-lit room.
-        self._req("POST", "/camera/daynight", body=json.dumps({"mode": "night"}))
-        self.assertEqual(self.mod.current_mode, "night")
-        self.hw["lux"] = 230.0
-        self._req("POST", "/camera/daynight", body=json.dumps({"mode": "auto"}))
-        self._wait_for(lambda: self.mod.current_mode == "day", 5)
-        self.assertEqual(self.mod.current_mode, "day",
-                         "lit room must show colour, not stay stuck in night grayscale")
+        lease = self.mod.acquire_stream_demand("snapshot")
+        try:
+            # Force night, then hand control back to auto with a well-lit room.
+            self._req("POST", "/camera/daynight", body=json.dumps({"mode": "night"}))
+            self.assertEqual(self.mod.current_mode, "night")
+            self.hw["lux"] = 230.0
+            self._req("POST", "/camera/daynight", body=json.dumps({"mode": "auto"}))
+            self._wait_for(lambda: self.mod.current_mode == "day", 5)
+            self.assertEqual(self.mod.current_mode, "day",
+                             "lit room must show colour, not stay stuck in night grayscale")
+        finally:
+            lease.release()
 
     def test_day_lux_must_exceed_night_lux(self):
         # The module guards against an overlapping/inverted band.
@@ -532,19 +546,23 @@ class CameraFeatureTest(unittest.TestCase):
 
     def test_adaptive_applied_by_monitor_on_lux_change(self):
         import json
-        self._req("POST", "/camera/daynight", body=json.dumps({"mode": "day"}))
-        self.hw["lux"] = 20.0
-        self._wait_for(lambda: any(
-            "Saturation" in c and abs(c["Saturation"] - self.mod.CAM_SAT_DIM) < 0.1
-            for c in self.hw["controls"][-6:]), 5)
-        n = len(self.hw["controls"])
-        self.hw["lux"] = 2000.0
-        self._wait_for(lambda: any(
-            "Saturation" in c and abs(c["Saturation"] - self.mod.CAM_SAT_BRIGHT) < 0.1
-            for c in self.hw["controls"][n:]), 5)
-        pushed = [c["Saturation"] for c in self.hw["controls"][n:] if "Saturation" in c]
-        self.assertTrue(pushed and abs(pushed[-1] - self.mod.CAM_SAT_BRIGHT) < 0.1, pushed)
-        self._req("POST", "/camera/daynight", body=json.dumps({"mode": "auto"}))
+        lease = self.mod.acquire_stream_demand("snapshot")
+        try:
+            self._req("POST", "/camera/daynight", body=json.dumps({"mode": "day"}))
+            self.hw["lux"] = 20.0
+            self._wait_for(lambda: any(
+                "Saturation" in c and abs(c["Saturation"] - self.mod.CAM_SAT_DIM) < 0.1
+                for c in self.hw["controls"][-6:]), 5)
+            n = len(self.hw["controls"])
+            self.hw["lux"] = 2000.0
+            self._wait_for(lambda: any(
+                "Saturation" in c and abs(c["Saturation"] - self.mod.CAM_SAT_BRIGHT) < 0.1
+                for c in self.hw["controls"][n:]), 5)
+            pushed = [c["Saturation"] for c in self.hw["controls"][n:] if "Saturation" in c]
+            self.assertTrue(pushed and abs(pushed[-1] - self.mod.CAM_SAT_BRIGHT) < 0.1, pushed)
+            self._req("POST", "/camera/daynight", body=json.dumps({"mode": "auto"}))
+        finally:
+            lease.release()
 
     def test_daynight_status_in_camera_info(self):
         import json

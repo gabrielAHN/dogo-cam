@@ -610,7 +610,7 @@
         {% endif %}
 
         {% if camera_available %}
-        <img id="video-feed" src="{{ url_for('video_feed') }}" alt="Live Dog Cam">
+        <img id="video-feed" data-src="{{ url_for('video_feed') }}" alt="Live Dog Cam">
         {% else %}
         <div class="camera-unavailable">
             <h2>📷</h2>
@@ -1063,8 +1063,8 @@
                     }
                     render(data);
                     const feed = document.getElementById('video-feed');
-                    if (feed) {
-                        feed.src = feed.getAttribute('src').split('?')[0] + '?t=' + Date.now();
+                    if (feed && !document.hidden) {
+                        feed.src = feed.dataset.src + '?t=' + Date.now();
                     }
                 } catch (error) {
                     if (hintEl) hintEl.textContent = error.message;
@@ -1151,40 +1151,79 @@
         })();
         {% endif %}
 
-        // --- Stream auto-reconnect -------------------------------------------
-        // The MJPEG response now ends cleanly when the camera stalls (server-side
-        // frame timeout) or returns 503 while the pipeline restarts. Reconnect
-        // with backoff instead of leaving a frozen/broken image on screen.
+        // --- Visibility-aware stream lifecycle and auto-reconnect -------------
         (function () {
             const img = document.getElementById('video-feed');
             if (!img) return;
-            const baseSrc = img.getAttribute('src').split('?')[0];
+            const baseSrc = img.dataset.src;
             let attempt = 0;
             let timer = null;
 
-            function reconnect() {
+            function disconnect() {
+                if (timer) {
+                    clearTimeout(timer);
+                    timer = null;
+                }
+                // Removing src closes the MJPEG HTTP response, releasing demand.
+                img.removeAttribute('src');
+            }
+
+            function connect(immediate = false) {
+                if (document.hidden) return;
                 if (timer) return;
-                const delay = Math.min(15000, 1000 * Math.pow(2, attempt++));
+                const delay = immediate ? 0 : Math.min(15000, 1000 * Math.pow(2, attempt++));
                 timer = setTimeout(() => {
                     timer = null;
+                    if (document.hidden) return;
                     img.src = baseSrc + '?t=' + Date.now();
                 }, delay);
+            }
+
+            function reconnect() {
+                if (document.hidden) return;
+                connect(false);
             }
 
             img.addEventListener('load', () => { attempt = 0; });
             img.addEventListener('error', reconnect);
 
+            document.addEventListener('visibilitychange', () => {
+                if (document.hidden) {
+                    disconnect();
+                } else {
+                    attempt = 0;
+                    connect(true);
+                }
+            });
+            window.addEventListener('pagehide', disconnect);
+            if (!document.hidden) connect(true);
+
             // A multipart stream that ended without error (server-side frame
-            // timeout) does not reliably fire onerror, and a full gunicorn
-            // restart makes fetch() fail. Poll health; once the server is healthy
-            // again after any stall/outage, re-attach the <img> exactly once.
+            // timeout), a clean end into the demand-driven idle state, or a full
+            // gunicorn restart all leave a frozen <img> without firing onerror.
+            // Poll health; reconnect once after any stall/outage clears, and also
+            // whenever the server reports no active demand while this tab is the
+            // one that should be viewing (idle/cooldown with viewers === 0) so a
+            // visible tab always re-arms the demand-driven camera.
             let sawStall = false;
             setInterval(async () => {
+                if (document.hidden) return;
                 try {
                     const resp = await fetch({{ url_for('stream_health')|tojson }}, { cache: 'no-store' });
                     const data = await resp.json();
                     if (!data.healthy) { sawStall = true; return; }
-                    if (sawStall) { sawStall = false; attempt = 0; reconnect(); }
+                    if (sawStall) { sawStall = false; attempt = 0; connect(true); return; }
+                    // Healthy but the server counts no viewers: this visible tab
+                    // is not holding a live MJPEG connection (a clean stream-end
+                    // into idle leaves the <img> frozen without firing onerror).
+                    // Re-attach to resume the demand-driven camera. Skip when the
+                    // stream is intentionally disabled or a connect is already
+                    // pending. Once connected the server counts us and viewers>0,
+                    // so this does not thrash an active stream.
+                    const noDemand = data.viewers === 0 && data.state !== 'disabled';
+                    if (noDemand && !timer) {
+                        attempt = 0; connect(true);
+                    }
                 } catch (e) {
                     sawStall = true; // unreachable: app restarting, retry next tick
                 }

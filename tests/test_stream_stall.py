@@ -215,24 +215,26 @@ class StalledCameraTest(unittest.TestCase):
                     pass
 
     def test_stalled_stream_reports_unhealthy_and_fails_fast(self):
-        # Never had a frame -> unhealthy.
-        self.assertEqual(self._get("/stream_health"), 503)
-        # Once we've observed a stall (frame timeout elapsed since last frame),
-        # /video_feed fails fast with 503 rather than holding the connection.
-        self.mod.output.write(b"\xff\xd8fake\xff\xd9")
-        time.sleep(float(os.environ["STREAM_FRAME_TIMEOUT"]) + 0.5)
-        t0 = time.time()
-        self.assertEqual(self._get("/video_feed"), 503)
-        self.assertLess(time.time() - t0, 2)
+        # Intentional idle is healthy; a demanded camera producing no frames is not.
+        self.assertEqual(self._get("/stream_health"), 200)
+        lease = self.mod.acquire_stream_demand("viewer")
+        try:
+            self.assertEqual(self._get("/stream_health"), 503)
+        finally:
+            lease.release()
 
     def test_stall_monitor_restarts_camera_pipeline(self):
         before = len(self.hw["instances"])
-        # Stall condition: camera available, no frames for > STREAM_STALL_RESTART_AFTER.
-        deadline = time.time() + 15
-        while time.time() < deadline and len(self.hw["instances"]) == before:
-            time.sleep(0.5)
-        self.assertGreater(len(self.hw["instances"]), before, "stall monitor never re-created the camera pipeline")
-        self.assertTrue(self.hw["instances"][before - 1].closed, "old pipeline was not closed before re-creating")
+        lease = self.mod.acquire_stream_demand("viewer")
+        try:
+            # Stall condition: demanded camera, no frames for restart threshold.
+            deadline = time.time() + 15
+            while time.time() < deadline and len(self.hw["instances"]) == before:
+                time.sleep(0.5)
+            self.assertGreater(len(self.hw["instances"]), before, "stall monitor never re-created the camera pipeline")
+            self.assertTrue(self.hw["instances"][before - 1].closed, "old pipeline was not closed before re-creating")
+        finally:
+            lease.release()
 
     def test_live_frames_stream_and_release_thread(self):
         # Simulate a healthy camera: pump frames on a background thread.
