@@ -1,5 +1,6 @@
 import atexit
 import io
+import ipaddress
 import json
 import logging
 import os
@@ -8,7 +9,7 @@ import threading
 import time
 import urllib.request
 from datetime import timedelta
-from functools import wraps
+from functools import lru_cache, wraps
 from urllib.parse import urlsplit
 
 import adafruit_dht
@@ -37,12 +38,75 @@ def env_flag(name, default="0"):
     return os.getenv(name, default).lower() in {"1", "true", "yes", "on"}
 
 
+# Remote-* identity headers and X-Forwarded-* are only believed when the TCP
+# peer is one of these addresses/CIDRs: the SSO reverse proxy (for jg-casa, the
+# Mac mini's Nebula address) and loopback (the watchdog). Anyone else on the
+# network gets the same treatment as TRUST_PROXY_AUTH_HEADERS=0.
+DEFAULT_TRUSTED_PROXY_ADDRS = "127.0.0.1,::1"
+
+
+@lru_cache(maxsize=8)
+def _parse_trusted_networks(value):
+    networks = []
+    for entry in (item.strip() for item in value.split(",")):
+        if not entry:
+            continue
+        try:
+            networks.append(ipaddress.ip_network(entry, strict=False))
+        except ValueError:
+            logger.warning(f"Ignoring invalid TRUSTED_PROXY_ADDRS entry {entry!r}")
+    return tuple(networks)
+
+
+def trusted_proxy_networks():
+    value = os.getenv("TRUSTED_PROXY_ADDRS", "").strip() or DEFAULT_TRUSTED_PROXY_ADDRS
+    return _parse_trusted_networks(value)
+
+
+def is_trusted_proxy_peer(address):
+    try:
+        peer = ipaddress.ip_address((address or "").split("%", 1)[0])
+    except ValueError:
+        return False
+    if peer.version == 6 and peer.ipv4_mapped is not None:
+        peer = peer.ipv4_mapped
+    return any(peer.version == net.version and peer in net for net in trusted_proxy_networks())
+
+
+def socket_peer(environ):
+    """The real TCP peer, even after ProxyFix rewrote REMOTE_ADDR."""
+    original = environ.get("werkzeug.proxy_fix.orig") or {}
+    return original.get("REMOTE_ADDR", environ.get("REMOTE_ADDR"))
+
+
+class TrustedProxyPeers:
+    """Apply ProxyFix only to requests whose socket peer is a trusted proxy."""
+
+    def __init__(self, direct_app, proxied_app):
+        self.direct_app = direct_app
+        self.proxied_app = proxied_app
+
+    def __call__(self, environ, start_response):
+        if is_trusted_proxy_peer(environ.get("REMOTE_ADDR")):
+            return self.proxied_app(environ, start_response)
+        if environ.get("HTTP_REMOTE_USER") or environ.get("HTTP_REMOTE_GROUPS"):
+            logger.warning(
+                f"Ignoring Remote-* headers from untrusted peer {environ.get('REMOTE_ADDR')!r}"
+            )
+        return self.direct_app(environ, start_response)
+
+
 app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY", os.urandom(24).hex())
 app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=1)
+_direct_wsgi_app = app.wsgi_app
+_proxied_wsgi_app = _direct_wsgi_app
 if env_flag("TRUST_PROXY_HEADERS"):
     proxy_prefix_count = 1 if env_flag("TRUST_PROXY_PREFIX_HEADERS") else 0
-    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=proxy_prefix_count)
+    _proxied_wsgi_app = ProxyFix(
+        _direct_wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=proxy_prefix_count
+    )
+app.wsgi_app = TrustedProxyPeers(_direct_wsgi_app, _proxied_wsgi_app)
 viewer_semaphore = threading.Semaphore(int(os.getenv("MAX_VIEWERS", 3)))
 viewer_slots_in_use = 0
 
@@ -530,11 +594,32 @@ def env_set(name, default):
 
 
 def trust_proxy_auth_headers():
-    return env_flag("TRUST_PROXY_AUTH_HEADERS")
+    if not env_flag("TRUST_PROXY_AUTH_HEADERS"):
+        return False
+    return is_trusted_proxy_peer(socket_peer(request.environ))
 
 
 def is_authenticated():
     return bool(authelia_user()) or bool(session.get("logged_in"))
+
+
+def can_view_camera():
+    """Optional viewer re-check (DOGCAM_VIEW_GROUPS) for proxy identities.
+
+    Unset keeps the old behaviour: any proxy-authenticated user may view.
+    Local password sessions are not group-based and are unaffected.
+    """
+    allowed = env_set("DOGCAM_VIEW_GROUPS", "")
+    if not allowed or not authelia_user():
+        return True
+    return bool(authelia_groups() & allowed)
+
+
+@app.before_request
+def enforce_view_groups():
+    if not can_view_camera():
+        return jsonify({"error": "Viewing the camera is not allowed for this user"}), 403
+    return None
 
 
 def can_control_camera():
