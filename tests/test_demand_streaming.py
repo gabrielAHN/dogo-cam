@@ -140,7 +140,10 @@ class DemandDrivenStreamingTest(unittest.TestCase):
         second.release()
 
     def test_viewer_release_is_idempotent_across_generator_and_response_close(self):
-        with self.mod.app.test_request_context("/video_feed", headers=self._headers()):
+        # Remote-User is only trusted from a trusted proxy peer (loopback by default).
+        with self.mod.app.test_request_context(
+            "/video_feed", headers=self._headers(), environ_base={"REMOTE_ADDR": "127.0.0.1"}
+        ):
             response = self.mod.video_feed()
         self.assertEqual(self.mod.active_viewers, 1)
         iterator = iter(response.response)
