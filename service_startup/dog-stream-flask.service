@@ -1,6 +1,15 @@
 [Unit]
 Description=Dog Stream Flask App
-After=network.target
+# Listen only where the SSO proxy and the local watchdog can reach us: never a
+# wildcard address. The app trusts Remote-User/Remote-Groups from the proxy,
+# so a home-LAN listener would let any device on the Wi-Fi skip Authelia.
+# 192.168.100.10 is this Pi's Nebula overlay address (the Mac mini proxy
+# connects from 192.168.100.1; the Pi's Nebula firewall admits only it).
+Wants=network-online.target nebula.service
+After=network-online.target nebula.service
+# Binding the overlay address fails (EADDRNOTAVAIL) until nebula has created
+# its tun device; never stop retrying so boot order can't leave us down.
+StartLimitIntervalSec=0
 
 [Service]
 User=your-user
@@ -9,9 +18,9 @@ WorkingDirectory=/home/your-user/dogo-cam
 EnvironmentFile=-/home/your-user/dogo-cam/.env
 # MJPEG responses hold one thread for their entire lifetime. Keep at least two
 # threads beyond MAX_VIEWERS so servo controls and health checks stay responsive.
-ExecStart=/home/your-user/.local/bin/uv run gunicorn --worker-class gthread --workers 1 --threads 6 --bind 0.0.0.0:5000 dogcam_stream:app
+ExecStart=/home/your-user/.local/bin/uv run gunicorn --worker-class gthread --workers 1 --threads 6 --bind 127.0.0.1:5000 --bind 192.168.100.10:5000 dogcam_stream:app
 Restart=always
-RestartSec=10
+RestartSec=5
 # Don't let a hung camera cleanup wedge the stop in 'deactivating' for 90s;
 # force-kill after 15s so Restart/the watchdog can actually recover it.
 TimeoutStopSec=15

@@ -78,7 +78,9 @@ ENABLE_CLOUDFLARED=1       # 0 when a reverse proxy owns the domain
 
 See `.env.example` for the full list (servo tuning, Home Assistant, Cloudflare, proxy‑trust flags).
 
-**Reverse‑proxy mode** — when another host (e.g. a Mac mini running Traefik/Authelia/Cloudflare) owns the public domain and proxies to the Pi: set `ENABLE_CLOUDFLARED=0`, `TRUST_PROXY_HEADERS=1`, and (behind Authelia) `TRUST_PROXY_AUTH_HEADERS=1` so a `Remote-User` header is trusted. Configure the proxy-only navigation links with `DOGCAM_HOME_URL=https://portal.example/` and `DOGCAM_LOGOUT_URL=https://auth.example/logout`; they are rendered only for trusted proxy-authenticated requests, while a local login keeps only its local Logout action. Camera controls are limited to users in `DOGCAM_CONTROL_GROUPS`; others can view only. Keep all `TRUST_PROXY_*` at `0` in standalone mode.
+**Reverse‑proxy mode** — when another host (e.g. a Mac mini running Traefik/Authelia/Cloudflare) owns the public domain and proxies to the Pi: set `ENABLE_CLOUDFLARED=0`, `TRUST_PROXY_HEADERS=1`, and (behind Authelia) `TRUST_PROXY_AUTH_HEADERS=1` so a `Remote-User` header is trusted. Configure the proxy-only navigation links with `DOGCAM_HOME_URL=https://portal.example/` and `DOGCAM_LOGOUT_URL=https://auth.example/logout`; they are rendered only for trusted proxy-authenticated requests, while a local login keeps only its local Logout action. Camera controls are limited to users in `DOGCAM_CONTROL_GROUPS`; others can view only. Set `DOGCAM_VIEW_GROUPS` (e.g. `dogo_viewers`) to also re-check the viewer group; unset, any proxy-authenticated user may view. Keep all `TRUST_PROXY_*` at `0` in standalone mode.
+
+**Trust boundary.** `Remote-*` and `X-Forwarded-*` headers are believed only when the TCP peer is listed in `TRUSTED_PROXY_ADDRS` (IPs/CIDRs; default `127.0.0.1,::1` for the watchdog). Add exactly the proxy's address, e.g. `TRUSTED_PROXY_ADDRS=127.0.0.1,::1,192.168.100.1` when the proxy reaches the Pi over Nebula; never a LAN range. Requests from any other peer are treated as anonymous, whatever headers they carry. Also keep gunicorn off the LAN: the systemd unit binds only `127.0.0.1:5000` and the Pi's Nebula address `192.168.100.10:5000`, never `0.0.0.0`.
 
 **Temperature source** — `/temp` reads a local DHT22 (`TEMP_SOURCE=sensor`, needs `adafruit_dht`, wired to `GPIO4`) or Home Assistant (`TEMP_SOURCE=ha` + `HA_URL`/`HA_TOKEN`/`HA_*_ENTITY` using an HA long‑lived token). HA mode skips the DHT22 dependency.
 
@@ -171,7 +173,7 @@ uv sync
 uv run gunicorn --worker-class gthread --workers 1 --threads 6 --bind 0.0.0.0:5000 dogcam_stream:app
 ```
 
-Then open `http://<pi-ip>:5000`.
+Then open `http://<pi-ip>:5000`. This quick start is for standalone mode only (local password login, all `TRUST_PROXY_*=0`). In reverse-proxy mode bind loopback plus the address the proxy uses, as in `service_startup/dog-stream-flask.service`.
 
 ## systemd
 
@@ -180,6 +182,8 @@ Example units are in `service_startup/`. Copy `dog-stream-flask.service` → `/e
 ```bash
 sudo systemctl daemon-reload && sudo systemctl enable --now dog-stream
 ```
+
+The unit binds `127.0.0.1:5000` (watchdog, button) and `192.168.100.10:5000` (the Nebula overlay the proxy uses). Until nebula has brought `tun0` up, binding the overlay address fails and gunicorn exits; `Restart=always` with `StartLimitIntervalSec=0` makes systemd retry every 5 s, and a listener that is already bound survives a nebula restart. Change the overlay address if your Pi's Nebula IP differs.
 
 Install `button-control.service` in all configurations: it uses `SWITCH_MODE=auto` to detect a connected switch and otherwise keeps the camera online. Use `SWITCH_MODE=always-on` for a deterministic switchless installation. Also install `dogcam-watchdog.{service,timer}` for stream self-healing, and optionally `cloudflared-tunnel.service` for standalone tunnel mode (after creating the tunnel + `~/.cloudflared/config.yml` and setting `ENABLE_CLOUDFLARED=1`).
 
@@ -222,7 +226,7 @@ A Pi 3B funnels all current through its micro‑USB / polyfuse (~2–2.5A), so c
 Important for a public repo with a self‑hosted runner:
 
 - SSH key‑only (`PasswordAuthentication no`, `PermitRootLogin no`); minimal `authorized_keys` (admin + command‑locked deploy key).
-- Firewall `:5000` to the proxy/tunnel host + localhost; drop the rest.
+- Never listen on the LAN in reverse-proxy mode: bind `:5000` to loopback + the overlay address (see systemd), set `TRUSTED_PROXY_ADDRS` to the proxy's address only, and let the Nebula firewall admit `:5000` only from the proxy host.
 - Disable unused services (e.g. Samba on `139/445`) — keep the surface to `:22` + `:5000`.
 - Scoped deploy sudo (`deploy/dogcam-deploy.sudoers`, restart only); avoid `NOPASSWD: ALL` on the service user.
 

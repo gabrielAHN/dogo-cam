@@ -46,7 +46,14 @@ fi
 # Remote-User lets the check pass login_required only when the app is
 # configured to trust proxy auth headers; otherwise it redirects (302) and we
 # treat "alive" as good enough, matching the old behaviour.
-health="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H 'Remote-User: watchdog' "$BASE/stream_health" 2>/dev/null)"
+# With DOGCAM_VIEW_GROUPS set the app also re-checks the viewer group, so send
+# the first allowed group (loopback is a trusted proxy peer by default).
+view_group="$(printf '%s' "${DOGCAM_VIEW_GROUPS:-}" | cut -d, -f1 | tr -d '[:space:]')"
+group_header=()
+if [ -n "$view_group" ]; then
+  group_header=(-H "Remote-Groups: $view_group")
+fi
+health="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H 'Remote-User: watchdog' ${group_header[@]+"${group_header[@]}"} "$BASE/stream_health" 2>/dev/null)"
 
 case "$health" in
   200)
