@@ -233,18 +233,22 @@ class DemandDrivenStreamingTest(unittest.TestCase):
         self.assertEqual(result, {"status": 200, "body": b"fresh-snapshot"})
         self.assertEqual(self.mod.snapshot_demands, 0)
 
-    def test_ui_disconnects_while_hidden_and_never_reconnects_hidden(self):
+    def test_ui_releases_feed_on_pagehide_but_ignores_page_visibility(self):
+        # Embedded/background browsers can report document.hidden while the
+        # page is still on screen; gating the feed on it froze the stream. The
+        # page releases demand only when it is actually unloaded (pagehide).
         with self.mod.app.test_client() as client:
             html = client.get("/", headers=self._headers()).get_data(as_text=True)
+        lifecycle = html.split("const img = document.getElementById('video-feed');", 1)[1]
+        lifecycle = lifecycle.split("</script>", 1)[0]
         for marker in (
-            "document.addEventListener('visibilitychange'",
-            "window.addEventListener('pagehide'",
-            "document.hidden",
+            "window.addEventListener('pagehide', disconnect)",
             "img.removeAttribute('src')",
-            "if (document.hidden) return",
             "connect(true)",
         ):
-            self.assertIn(marker, html)
+            self.assertIn(marker, lifecycle)
+        self.assertNotIn("visibilitychange", lifecycle)
+        self.assertNotIn("if (document.hidden)", lifecycle)
 
     def test_ui_resumes_feed_when_visible_and_server_reports_no_demand(self):
         # idle returns healthy:true now, so an unhealthy->healthy transition no

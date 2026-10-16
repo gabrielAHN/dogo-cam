@@ -210,7 +210,7 @@ Existing installations must reinstall both files after updating the repository; 
 A Pi 3B funnels all current through its micro‑USB / polyfuse (~2–2.5A), so camera + MJPEG encoding + servos can brown out the 5V rail (under‑voltage) even with a strong supply — the camera stalls or the app hangs.
 
 - **`STREAM_MAX_FPS`** (default 15) caps the framerate to cut peak draw — the biggest lever (`vcgencmd get_throttled` non‑zero = dips).
-- Camera acquisition and JPEG encoding are demand-driven: startup configures the camera but leaves it idle; the first visible viewer (or `/snapshot`) starts recording, and `STREAM_IDLE_TIMEOUT` (default 10s) stops it after the final viewer disconnects while keeping the camera configured for a quick restart. Hidden/page-hidden browser tabs close their MJPEG connection and reconnect immediately when visible.
+- Camera acquisition and JPEG encoding are demand-driven: startup configures the camera but leaves it idle; the first viewer (or `/snapshot`) starts recording, and `STREAM_IDLE_TIMEOUT` (default 10s) stops it after the final viewer disconnects while keeping the camera configured for a quick restart. The page closes its MJPEG connection only on `pagehide` (unload); it deliberately ignores Page Visibility, because embedded/background browsers can report "hidden" while still on screen, which froze the feed.
 - Single‑shot autofocus at startup (imx708) avoids continuous AF‑motor draw and PDAF log spam.
 - Real fix: power the servos from a **separate 5V** (common ground), or use a Pi 4/5.
 - **Self‑healing (three layers):**

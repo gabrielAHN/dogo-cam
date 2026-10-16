@@ -1151,7 +1151,7 @@
         })();
         {% endif %}
 
-        // --- Visibility-aware stream lifecycle and auto-reconnect -------------
+        // --- Loaded-page stream lifecycle and auto-reconnect -----------------
         (function () {
             const img = document.getElementById('video-feed');
             if (!img) return;
@@ -1169,34 +1169,23 @@
             }
 
             function connect(immediate = false) {
-                if (document.hidden) return;
                 if (timer) return;
                 const delay = immediate ? 0 : Math.min(15000, 1000 * Math.pow(2, attempt++));
                 timer = setTimeout(() => {
                     timer = null;
-                    if (document.hidden) return;
                     img.src = baseSrc + '?t=' + Date.now();
                 }, delay);
             }
 
             function reconnect() {
-                if (document.hidden) return;
                 connect(false);
             }
 
             img.addEventListener('load', () => { attempt = 0; });
             img.addEventListener('error', reconnect);
 
-            document.addEventListener('visibilitychange', () => {
-                if (document.hidden) {
-                    disconnect();
-                } else {
-                    attempt = 0;
-                    connect(true);
-                }
-            });
             window.addEventListener('pagehide', disconnect);
-            if (!document.hidden) connect(true);
+            connect(true);
 
             // A multipart stream that ended without error (server-side frame
             // timeout), a clean end into the demand-driven idle state, or a full
@@ -1204,16 +1193,17 @@
             // Poll health; reconnect once after any stall/outage clears, and also
             // whenever the server reports no active demand while this tab is the
             // one that should be viewing (idle/cooldown with viewers === 0) so a
-            // visible tab always re-arms the demand-driven camera.
+            // loaded page always re-arms the demand-driven camera. Page Visibility
+            // is deliberately ignored: embedded/background browsers may report
+            // hidden while still being displayed, which previously froze the feed.
             let sawStall = false;
             setInterval(async () => {
-                if (document.hidden) return;
                 try {
                     const resp = await fetch({{ url_for('stream_health')|tojson }}, { cache: 'no-store' });
                     const data = await resp.json();
                     if (!data.healthy) { sawStall = true; return; }
                     if (sawStall) { sawStall = false; attempt = 0; connect(true); return; }
-                    // Healthy but the server counts no viewers: this visible tab
+                    // Healthy but the server counts no viewers: this loaded page
                     // is not holding a live MJPEG connection (a clean stream-end
                     // into idle leaves the <img> frozen without firing onerror).
                     // Re-attach to resume the demand-driven camera. Skip when the
