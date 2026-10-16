@@ -125,7 +125,11 @@ class DemandDrivenStreamingTest(unittest.TestCase):
 
         lease.release()
         self.assertTrue(self.mod.camera_running, "idle timeout should provide a reconnect cooldown")
-        time.sleep(self.mod.STREAM_IDLE_TIMEOUT + 0.08)
+        time.sleep(self.mod.STREAM_IDLE_TIMEOUT)
+        # The idle-stop timer thread can start late on a loaded machine.
+        deadline = time.monotonic() + 2
+        while self.mod.camera_running and time.monotonic() < deadline:
+            time.sleep(0.01)
         self.assertFalse(self.mod.camera_running)
         self.assertIsNotNone(self.mod.camera, "idle stop must keep the camera configured")
         self.assertEqual(self.hw["stops"], 1)
@@ -228,6 +232,11 @@ class DemandDrivenStreamingTest(unittest.TestCase):
             time.sleep(0.005)
         self.assertEqual(self.mod.snapshot_demands, 1)
         self.assertTrue(self.mod.camera_running)
+        # snapshot_demands is bumped before the lease records its frame_id,
+        # both under camera_lock; wait for that section to finish so the
+        # "fresh" frame below is really newer than the lease.
+        with self.mod.camera_lock:
+            pass
         self.mod.output.write(b"fresh-snapshot")
         thread.join(1)
         self.assertEqual(result, {"status": 200, "body": b"fresh-snapshot"})

@@ -3,11 +3,19 @@
 
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="mobile-web-app-capable" content="yes">
     <title>{{ dog_name }} Stream</title>
+    <script>
+        // Per-device "Show title" choice, applied before first paint.
+        try {
+            if (localStorage.getItem('dogcam.showTitle') === '0') {
+                document.documentElement.classList.add('title-hidden');
+            }
+        } catch (e) { /* storage blocked: keep the title */ }
+    </script>
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto:wght@700&display=swap">
     <script src="https://unpkg.com/htmx.org@1.9.10"></script>
     <style>
@@ -156,7 +164,7 @@
             font-family: 'Roboto', sans-serif;
             transition: all 0.3s ease;
             -webkit-tap-highlight-color: transparent;
-            display: {% if camera_available or servo_available or daynight_available %}block{% else %}none{% endif %};
+            display: block;
         }
 
         #top-actions #fullscreen-btn,
@@ -169,7 +177,7 @@
         }
 
         #top-actions #settings-btn {
-            display: {% if camera_available or servo_available or daynight_available %}inline-flex{% else %}none{% endif %};
+            display: inline-flex;
         }
 
         #settings-btn:hover {
@@ -223,13 +231,98 @@
         }
 
         .close-modal {
-            position: absolute;
+            position: fixed;
             top: 20px;
             right: 20px;
+            width: 44px;
+            height: 44px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0;
+            border: 0;
+            background: none;
             color: #fff;
             font-size: 36px;
+            line-height: 1;
+            font-family: inherit;
             cursor: pointer;
             -webkit-tap-highlight-color: transparent;
+        }
+
+        .title-hidden #stream-title {
+            display: none;
+        }
+
+        .status-short,
+        .temp-short {
+            display: none;
+        }
+
+        .servo-axes,
+        .servo-axis {
+            display: contents;
+        }
+
+        .servo-label.pan-label {
+            margin-top: 15px;
+        }
+
+        #btn-reset {
+            margin-top: 15px;
+        }
+
+        .switch-row {
+            width: 100%;
+            min-height: 44px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            color: #fff;
+            font-family: 'Roboto', sans-serif;
+            font-size: 15px;
+            cursor: pointer;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .switch-row input {
+            appearance: none;
+            -webkit-appearance: none;
+            flex: none;
+            position: relative;
+            width: 48px;
+            height: 28px;
+            margin: 0;
+            border-radius: 14px;
+            background-color: rgba(255, 255, 255, 0.25);
+            cursor: pointer;
+            transition: background-color 0.2s ease;
+        }
+
+        .switch-row input::after {
+            content: "";
+            position: absolute;
+            top: 3px;
+            left: 3px;
+            width: 22px;
+            height: 22px;
+            border-radius: 50%;
+            background-color: #fff;
+            transition: transform 0.2s ease;
+        }
+
+        .switch-row input:checked {
+            background-color: #4CAF50;
+        }
+
+        .switch-row input:checked::after {
+            transform: translateX(20px);
+        }
+
+        .switch-row input:focus-visible {
+            outline: 2px solid #fff;
+            outline-offset: 2px;
         }
 
         .servo-panel {
@@ -478,8 +571,18 @@
             transition: opacity 0.3s;
         }
 
+        body.mobile-fullscreen #top-actions {
+            opacity: 1;
+        }
+
+        body.mobile-fullscreen #top-actions > :not(#fullscreen-btn) {
+            visibility: hidden;
+            transition: none;
+        }
+
         body.mobile-fullscreen #fullscreen-btn {
             opacity: 0.3;
+            pointer-events: auto;
         }
 
         body.mobile-fullscreen #fullscreen-btn:active {
@@ -487,11 +590,6 @@
         }
 
         @media (max-width: 768px) {
-            #servo-controls {
-                bottom: 60px;
-                right: 10px;
-            }
-
             .servo-btn {
                 font-size: 20px;
             }
@@ -513,9 +611,228 @@
             }
 
             .top-action {
-                min-height: 40px;
+                min-height: 44px;
                 padding: 0 10px;
                 font-size: 13px;
+            }
+        }
+
+        /* Phones (portrait, and landscape by height): one compact row. */
+        @media (max-width: 640px), (max-height: 500px) {
+            #stream-status {
+                top: calc(max(10px, env(safe-area-inset-top)) + 6px);
+                left: max(10px, env(safe-area-inset-left));
+                height: 32px;
+                box-sizing: border-box;
+                display: inline-flex;
+                align-items: center;
+                gap: 6px;
+                padding: 0 10px;
+                border-radius: 16px;
+                font-size: 13px;
+                white-space: nowrap;
+            }
+
+            .status-full,
+            .temp-full {
+                position: absolute;
+                width: 1px;
+                height: 1px;
+                overflow: hidden;
+                clip: rect(0 0 0 0);
+                clip-path: inset(50%);
+                white-space: nowrap;
+            }
+
+            .status-short,
+            .temp-short {
+                display: inline;
+            }
+
+            #top-actions {
+                top: max(10px, env(safe-area-inset-top));
+                right: max(10px, env(safe-area-inset-right));
+                gap: 6px;
+                flex-wrap: nowrap;
+                max-width: none;
+            }
+
+            #top-actions .top-action,
+            #top-actions #settings-btn,
+            #top-actions #fullscreen-btn {
+                box-sizing: border-box;
+                width: 44px;
+                min-width: 44px;
+                height: 44px;
+                min-height: 44px;
+                padding: 0;
+                font-size: 20px;
+                border-radius: 10px;
+            }
+
+            #top-actions #settings-btn {
+                font-size: 22px;
+            }
+
+            /* Links keep their text for assistive tech; show an icon instead. */
+            #top-actions a.top-action[data-icon] {
+                font-size: 0;
+            }
+
+            #top-actions a.top-action[data-icon]::before {
+                content: "";
+                width: 22px;
+                height: 22px;
+                background-color: currentColor;
+                -webkit-mask: var(--icon) center / contain no-repeat;
+                mask: var(--icon) center / contain no-repeat;
+            }
+
+            #top-actions a[data-icon="home"] {
+                --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z'/%3E%3C/svg%3E");
+            }
+
+            #top-actions a[data-icon="logout"] {
+                --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4'/%3E%3Cpath d='M16 17l5-5-5-5'/%3E%3Cpath d='M21 12H9'/%3E%3C/svg%3E");
+            }
+
+            #stream-title {
+                top: calc(max(10px, env(safe-area-inset-top)) + 52px);
+                margin: 0;
+                max-width: calc(100vw - 24px);
+                font-size: 20px;
+                line-height: 1.25;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
+
+            #temp {
+                bottom: max(10px, env(safe-area-inset-bottom));
+                max-width: calc(100vw - 20px);
+                box-sizing: border-box;
+                padding: 6px 12px;
+                border-radius: 16px;
+                background-color: rgba(0, 0, 0, 0.55);
+                font-size: 13px;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
+
+            #servo-controls {
+                position: relative;
+                box-sizing: border-box;
+                width: calc(100vw - 20px);
+                max-height: calc(100vh - 20px);
+                max-height: calc(100dvh - 20px);
+                padding: 12px;
+                gap: 10px;
+                border-radius: 14px;
+            }
+
+            .modal-header {
+                min-height: 44px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                margin: 0;
+                padding: 0 44px;
+                font-size: 18px;
+            }
+
+            #servo-controls .close-modal {
+                position: absolute;
+                top: 12px;
+                right: 8px;
+                font-size: 30px;
+            }
+
+            .servo-panel {
+                padding: 10px 12px;
+                gap: 6px;
+            }
+
+            .servo-label {
+                margin-bottom: 2px;
+                font-size: 12px;
+            }
+
+            .servo-value {
+                font-size: 15px;
+            }
+
+            .daynight-buttons {
+                gap: 8px;
+            }
+
+            .daynight-btn {
+                flex-direction: row;
+                gap: 6px;
+                min-height: 44px;
+                padding: 0 6px;
+            }
+
+            .daynight-btn .dn-icon {
+                font-size: 18px;
+            }
+
+            .daynight-btn .dn-label {
+                font-size: 11px;
+            }
+
+            .daynight-hint {
+                margin-top: 2px;
+                font-size: 11px;
+            }
+
+            .servo-axes {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 12px;
+                width: 100%;
+                align-items: start;
+            }
+
+            .servo-axis {
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                gap: 6px;
+            }
+
+            .servo-label.pan-label {
+                margin-top: 0;
+            }
+
+            .tilt-buttons {
+                grid-template-columns: 44px;
+                grid-template-rows: repeat(2, 44px);
+            }
+
+            .pan-buttons {
+                grid-template-columns: repeat(2, 44px);
+                grid-template-rows: 44px;
+            }
+
+            #btn-reset {
+                margin-top: 4px;
+                min-height: 44px;
+                padding: 0 12px;
+            }
+
+            .controls-hint {
+                margin-top: 2px;
+                padding: 6px 8px;
+                font-size: 12px;
+            }
+
+            .controls-hint .hint-keyboard {
+                display: none;
+            }
+
+            .controls-hint .hint-touch {
+                margin-top: 0 !important;
             }
         }
     </style>
@@ -523,26 +840,25 @@
 
 <body>
     <div id="video-container">
-        <h1>{{ dog_name }} Stream</h1>
+        <h1 id="stream-title">{{ dog_name }} Stream</h1>
         <div id="stream-status" hx-get="{{ url_for('stream_status') }}" hx-trigger="load, every 2s" hx-swap="innerHTML">
             Checking status...
         </div>
         <div id="top-actions" aria-label="Navigation">
             {% if home_url %}
-            <a class="top-action" href="{{ home_url }}">Home</a>
+            <a class="top-action" data-icon="home" href="{{ home_url }}">Home</a>
             {% endif %}
             {% if logout_url %}
-            <a class="top-action" href="{{ logout_url }}">Logout</a>
+            <a class="top-action" data-icon="logout" href="{{ logout_url }}">Logout</a>
             {% endif %}
-            <button class="top-action" id="settings-btn" title="Camera Settings" onclick="toggleServoModal()">⚙</button>
-            <button class="top-action" id="fullscreen-btn" title="Toggle Fullscreen">⛶</button>
+            <button class="top-action" id="settings-btn" title="Camera Settings" aria-label="Camera settings" aria-controls="servo-controls-modal" aria-expanded="false" onclick="toggleServoModal()">⚙</button>
+            <button class="top-action" id="fullscreen-btn" title="Toggle Fullscreen" aria-label="Toggle fullscreen">⛶</button>
         </div>
 
-        {% if camera_available or servo_available or daynight_available %}
         <div id="servo-controls-modal">
-            <span class="close-modal" onclick="toggleServoModal()">×</span>
-            <div id="servo-controls">
-                <div class="modal-header">⚙ Camera Controls</div>
+            <div id="servo-controls" role="dialog" aria-modal="true" aria-labelledby="servo-controls-title">
+                <div class="modal-header" id="servo-controls-title">⚙ Camera Controls</div>
+                <button type="button" class="close-modal" aria-label="Close camera settings" onclick="toggleServoModal()">×</button>
 
                 {% if camera_available %}
                 <div id="panel-camera-view" class="servo-panel visible">
@@ -585,29 +901,41 @@
 
                 {% if servo_available %}
                 <div id="panel-manual" class="servo-panel visible">
-                    <div class="servo-label"><span>Tilt</span><span class="servo-value" id="servo1-angle">--</span></div>
-                    <div class="servo-buttons tilt-buttons">
-                        <button id="btn-up" class="servo-btn">▲</button>
-                        <button id="btn-down" class="servo-btn">▼</button>
+                    <div class="servo-axes">
+                        <div class="servo-axis">
+                            <div class="servo-label"><span>Tilt</span><span class="servo-value" id="servo1-angle">--</span></div>
+                            <div class="servo-buttons tilt-buttons">
+                                <button id="btn-up" class="servo-btn" aria-label="Tilt up">▲</button>
+                                <button id="btn-down" class="servo-btn" aria-label="Tilt down">▼</button>
+                            </div>
+                        </div>
+
+                        <div class="servo-axis">
+                            <div class="servo-label pan-label"><span>Pan</span><span class="servo-value" id="servo2-angle">--</span></div>
+                            <div class="servo-buttons pan-buttons">
+                                <button id="btn-left" class="servo-btn" aria-label="Pan left">◀</button>
+                                <button id="btn-right" class="servo-btn" aria-label="Pan right">▶</button>
+                            </div>
+                        </div>
                     </div>
 
-                    <div class="servo-label" style="margin-top: 15px;"><span>Pan</span><span class="servo-value" id="servo2-angle">--</span></div>
-                    <div class="servo-buttons pan-buttons">
-                        <button id="btn-left" class="servo-btn">◀</button>
-                        <button id="btn-right" class="servo-btn">▶</button>
-                    </div>
-
-                    <button id="btn-reset" class="reset-btn" onclick="resetServos()" style="margin-top: 15px;">🏠 Home</button>
+                    <button id="btn-reset" class="reset-btn" onclick="resetServos()">🏠 Home</button>
 
                     <div class="controls-hint">
-                        <div><strong>Keyboard:</strong> <span class="keyboard-hint">↑↓←→</span> or <span class="keyboard-hint">WASD</span></div>
-                        <div style="margin-top: 5px;"><strong>Touch:</strong> Tap or hold the screen direction</div>
+                        <div class="hint-keyboard"><strong>Keyboard:</strong> <span class="keyboard-hint">↑↓←→</span> or <span class="keyboard-hint">WASD</span></div>
+                        <div class="hint-touch" style="margin-top: 5px;"><strong>Touch:</strong> Tap or hold the screen direction</div>
                     </div>
                 </div>
                 {% endif %}
+
+                <div id="panel-display" class="servo-panel visible">
+                    <label class="switch-row" for="toggle-title">
+                        <span>Show title</span>
+                        <input type="checkbox" id="toggle-title" role="switch" checked>
+                    </label>
+                </div>
             </div>
         </div>
-        {% endif %}
 
         {% if camera_available %}
         <img id="video-feed" data-src="{{ url_for('video_feed') }}" alt="Live Dog Cam">
@@ -715,8 +1043,90 @@
                 return;
             }
 
-            modal.classList.toggle('active');
+            const open = modal.classList.toggle('active');
+            const settingsBtn = document.getElementById('settings-btn');
+            settingsBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+            if (open) {
+                modal.querySelector('.close-modal').focus({ preventScroll: true });
+            } else if (modal.contains(document.activeElement) || document.activeElement === document.body) {
+                settingsBtn.focus({ preventScroll: true });
+            }
         }
+
+        document.addEventListener('keydown', function(event) {
+            const modal = document.getElementById('servo-controls-modal');
+            if (event.key === 'Escape' && modal && modal.classList.contains('active')) {
+                event.preventDefault();
+                event.stopPropagation();
+                toggleServoModal();
+            }
+        });
+
+        // --- Per-device "Show title" switch -----------------------------------
+        (function () {
+            const KEY = 'dogcam.showTitle';
+            const toggle = document.getElementById('toggle-title');
+            if (!toggle) return;
+
+            function apply(show) {
+                document.documentElement.classList.toggle('title-hidden', !show);
+                toggle.checked = show;
+            }
+
+            let show = true;
+            try { show = localStorage.getItem(KEY) !== '0'; } catch (e) { /* keep default */ }
+            apply(show);
+
+            toggle.addEventListener('change', () => {
+                apply(toggle.checked);
+                try { localStorage.setItem(KEY, toggle.checked ? '1' : '0'); } catch (e) { /* not saved */ }
+            });
+        })();
+
+        // --- Compact status / temperature text for phones ---------------------
+        // The server sends one line of text; keep it for desktop and screen
+        // readers and add a short form that the phone layout shows instead.
+        (function () {
+            const STATUS_SHORT = [
+                [/active/i, 'Live'], [/stalled/i, 'Stalled'], [/cooling/i, 'Cooling'],
+                [/idle/i, 'Idle'], [/paused/i, 'Paused'], [/not connected/i, 'No camera'],
+                [/shutting/i, 'Stopping']
+            ];
+
+            function span(className, text, hidden) {
+                const el = document.createElement('span');
+                el.className = className;
+                el.textContent = text;
+                if (hidden) el.setAttribute('aria-hidden', 'true');
+                return el;
+            }
+
+            function renderStatus(el) {
+                const text = el.textContent.trim();
+                const match = text.match(/^(\S+)\s+(.+)$/);
+                if (!match || /[A-Za-z0-9]/.test(match[1])) return;
+                const full = match[2];
+                const short = (STATUS_SHORT.find(([pattern]) => pattern.test(full)) || [null, full])[1];
+                el.replaceChildren(span('status-dot', match[1], true), document.createTextNode(' '),
+                                   span('status-full', full), span('status-short', short, true));
+            }
+
+            function renderTemp(el) {
+                const text = el.textContent.trim();
+                const match = text.match(/^Room Temp:\s*(-?[\d.]+)°C\s*\((-?[\d.]+)°F\)\s*\|\s*Humidity:\s*([\d.]+)%(.*)$/);
+                if (!match) return;
+                const cached = /cached/i.test(match[4]) ? ' (cached)' : '';
+                const short = `🌡️ ${Number(match[1]).toFixed(1)}°C (${Number(match[2]).toFixed(1)}°F) · 💧 ${Math.round(Number(match[3]))}%${cached}`;
+                el.replaceChildren(span('temp-full', text), span('temp-short', short, true));
+            }
+
+            document.body.addEventListener('htmx:afterSwap', (event) => {
+                const target = (event.detail && event.detail.target) || event.target;
+                if (!target) return;
+                if (target.id === 'stream-status') renderStatus(target);
+                else if (target.id === 'temp') renderTemp(target);
+            });
+        })();
 
         document.addEventListener('click', function(event) {
             const modal = document.getElementById('servo-controls-modal');

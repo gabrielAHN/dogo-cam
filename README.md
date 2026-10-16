@@ -104,6 +104,10 @@ All image tuning (`CAM_*`), day/night switching and digital zoom are **ISP‑sid
 
 **In the web UI**, the ⚙ settings button opens Camera Controls. The **Camera orientation** row switches between **Normal** and **Rotate 180°**, restarts the camera pipeline to apply the transform, and persists the choice across service restarts and reboots. The **Day / Night** row provides **🔄 Auto** (follow the light sensor, the default), **☀️ Light** (force colour), and **🌙 Dark** (force grayscale). Camera-control permission (`DOGCAM_CONTROL_GROUPS`) is required to change either setting; everyone else sees them read-only.
 
+The **Show title** switch at the bottom of Camera Controls hides or shows the "<name> Stream" title. It needs no permission and is remembered per device (browser `localStorage`), so hiding it on a phone leaves other screens unchanged.
+
+**On phones** (width ≤ 640px, or landscape height ≤ 500px) the top bar is a single row: a small status pill (e.g. ⚪ Idle, 🟢 Live) and four 44px icon buttons (Home, Logout, ⚙, ⛶). The title sits on one line below it, the temperature shrinks to one line, and Camera Controls packs the tilt/pan pad side by side so a 393×852 phone shows every control without scrolling. Desktop keeps the text buttons and full status text.
+
 ### Camera configuration reference
 
 Every knob is an env var in `.env` with a safe default — nothing below is required, and unset values keep the sensor/ISP default. Change them without touching code; a restart applies resolution/tuning-file changes, while day/night, saturation, zoom and EV adjust live. The **Default** column is the value shipped in `.env.example` (a few internal code fallbacks differ slightly).
@@ -159,7 +163,7 @@ Every knob is an env var in `.env` with a safe default — nothing below is requ
 | `CAM_ZOOM` | `1.0` | Startup zoom (1.0 = full field of view). |
 | `CAM_ZOOM_MAX` | `4.0` | Max zoom the `/camera/zoom` endpoint allows. |
 
-Tests: `python3 -m unittest tests.test_camera_features` (runs off‑Pi with stubbed camera libs).
+Tests: `uv run --no-project --with flask --with python-dotenv python -m unittest discover -s tests` (runs off‑Pi with stubbed camera libs). Add `--with playwright` to also run the phone/desktop layout checks in `tests/test_mobile_ui.py` (Chromium + WebKit; they skip when Playwright or its browsers are missing).
 
 ## Raspberry Pi setup
 
