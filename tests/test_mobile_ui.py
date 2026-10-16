@@ -228,10 +228,16 @@ PHONES = [("phone-320", 320, 568), ("phone-393", 393, 852), ("landscape-852", 85
 DESKTOP = ("desktop-1280", 1280, 800)
 
 
-@unittest.skipIf(sync_playwright is None, "Playwright is not installed")
 class MobileLayoutBrowserTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        # DOGCAM_REQUIRE_BROWSER=1: missing Playwright or either engine is a
+        # failure (WebKit is the closest stand-in for iPhone Safari).
+        require = bool(os.getenv("DOGCAM_REQUIRE_BROWSER"))
+        if sync_playwright is None:
+            if require:
+                raise RuntimeError("DOGCAM_REQUIRE_BROWSER is set but Playwright is not installed")
+            raise unittest.SkipTest("Playwright is not installed")
         cls.environ = patch.dict(os.environ, ENV, clear=False)
         cls.environ.start()
         cls.mod = _load_app()
@@ -247,6 +253,7 @@ class MobileLayoutBrowserTest(unittest.TestCase):
         cls.base = f"http://127.0.0.1:{cls.port}/"
         cls.pw = sync_playwright().start()
         cls.engines = []
+        missing = []
         for name, launch in (
             ("chromium", lambda: cls.pw.chromium.launch(executable_path=SYSTEM_CHROME)
              if os.path.exists(SYSTEM_CHROME) else cls.pw.chromium.launch()),
@@ -255,10 +262,12 @@ class MobileLayoutBrowserTest(unittest.TestCase):
             try:
                 cls.engines.append((name, launch()))
             except Exception as error:  # pragma: no cover - engine not installed
+                missing.append(name)
                 print(f"[mobile-ui] {name} unavailable: {str(error).splitlines()[0]}")
-        if not cls.engines:
-            if os.getenv("DOGCAM_REQUIRE_BROWSER"):
-                raise RuntimeError("DOGCAM_REQUIRE_BROWSER is set but no Playwright browser launched")
+        if (require and missing) or not cls.engines:
+            cls.tearDownClass()
+            if require:
+                raise RuntimeError(f"DOGCAM_REQUIRE_BROWSER is set but {', '.join(missing)} did not launch")
             raise unittest.SkipTest("no Playwright browser could launch")
 
     @classmethod
@@ -271,14 +280,15 @@ class MobileLayoutBrowserTest(unittest.TestCase):
         cls.mod.cleanup()
         cls.environ.stop()
 
-    def _page(self, browser, width, height, touch=True):
+    def _page(self, browser, width, height, touch=True, polls=True):
         context = browser.new_context(viewport={"width": width, "height": height}, has_touch=touch)
         # Offline + deterministic: no CDN htmx/fonts; polls are simulated.
         context.route("**/*", lambda route: route.abort()
                       if not route.request.url.startswith(self.base) else route.continue_())
         page = context.new_page()
         page.goto(self.base, wait_until="load")
-        page.evaluate(SIMULATE_POLLS)
+        if polls:
+            page.evaluate(SIMULATE_POLLS)
         return context, page
 
     def test_phone_top_bar_is_one_row_of_icon_buttons(self):
@@ -320,10 +330,26 @@ class MobileLayoutBrowserTest(unittest.TestCase):
                     finally:
                         context.close()
 
+    def test_phone_top_bar_fits_before_the_first_status_poll(self):
+        # Until htmx answers (or if its CDN script fails) the pill shows the
+        # server-rendered placeholder; it must already be the compact form.
+        for engine, browser in self.engines:
+            for label, width, height in PHONES:
+                with self.subTest(engine=engine, size=label):
+                    context, page = self._page(browser, width, height, polls=False)
+                    try:
+                        m = page.evaluate(MEASURE)
+                        self.assertEqual(m["overlaps"], [])
+                        self.assertLessEqual(m["status"]["w"], 120, m["status"])
+                        self.assertIn("Checking", m["status"]["text"])
+                        self.assertTrue(m["pageFits"])
+                    finally:
+                        context.close()
+
     def test_desktop_keeps_text_buttons_and_full_status(self):
         # A short desktop window (e.g. a laptop with a docked console) is not
         # a phone: it keeps the desktop controls too.
-        sizes = (DESKTOP, ("desktop-short", 1280, 480))
+        sizes = (DESKTOP, ("desktop-short", 1280, 480), ("desktop-short-narrow", 900, 450))
         for engine, browser in self.engines:
             for label, width, height in sizes:
                 with self.subTest(engine=engine, size=label):
@@ -398,7 +424,8 @@ class MobileLayoutBrowserTest(unittest.TestCase):
             with self.subTest(engine=engine):
                 context, page = self._page(browser, 393, 852)
                 try:
-                    page.evaluate("enterMobileFullscreen(); updateFullscreenButton();")
+                    page.evaluate("enterMobileFullscreen()")
+                    self.assertEqual(page.text_content("#fullscreen-btn"), "✕", "button still shows enter glyph")
                     # The other top buttons hide at once (no visibility transition).
                     self.assertEqual(page.evaluate(
                         "getComputedStyle(document.getElementById('settings-btn')).visibility"), "hidden")
@@ -412,6 +439,7 @@ class MobileLayoutBrowserTest(unittest.TestCase):
                     self.assertFalse(page.is_visible("#settings-btn"))
                     page.tap("#fullscreen-btn")
                     self.assertFalse(page.evaluate("document.body.classList.contains('mobile-fullscreen')"))
+                    self.assertEqual(page.text_content("#fullscreen-btn"), "⛶")
                 finally:
                     context.close()
 

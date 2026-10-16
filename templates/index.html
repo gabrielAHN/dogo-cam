@@ -617,9 +617,9 @@
             }
         }
 
-        /* Phones: portrait by width; landscape by height, but only on a
-           phone-sized or touch screen so short desktop windows stay desktop. */
-        @media (max-width: 640px), (max-height: 500px) and (max-width: 960px), (max-height: 500px) and (pointer: coarse) {
+        /* Phones: portrait by width; landscape by height, but only with a
+           touch (coarse) pointer so short desktop windows stay desktop. */
+        @media (max-width: 640px), (max-height: 500px) and (pointer: coarse) {
             #stream-status {
                 top: calc(max(10px, env(safe-area-inset-top)) + 6px);
                 left: max(10px, env(safe-area-inset-left));
@@ -850,7 +850,7 @@
     <div id="video-container">
         <h1 id="stream-title">{{ dog_name }} Stream</h1>
         <div id="stream-status" hx-get="{{ url_for('stream_status') }}" hx-trigger="load, every 2s" hx-swap="innerHTML">
-            Checking status...
+            <span class="status-full">Checking status...</span><span class="status-short" aria-hidden="true">Checking…</span>
         </div>
         <div id="top-actions" aria-label="Navigation">
             {% if home_url %}
@@ -983,6 +983,7 @@
         function enterMobileFullscreen() {
             document.body.classList.add('mobile-fullscreen');
             mobileFullscreen = true;
+            updateFullscreenButton();
             window.scrollTo(0, 1);
             if (screen.orientation && screen.orientation.lock) {
                 screen.orientation.lock('landscape').catch(() => {});
@@ -992,6 +993,7 @@
         function exitMobileFullscreen() {
             document.body.classList.remove('mobile-fullscreen');
             mobileFullscreen = false;
+            updateFullscreenButton();
             window.scrollTo(0, 0);
             if (screen.orientation && screen.orientation.unlock) {
                 screen.orientation.unlock();

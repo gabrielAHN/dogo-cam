@@ -106,7 +106,7 @@ All image tuning (`CAM_*`), day/night switching and digital zoom are **ISP‑sid
 
 The **Show title** switch at the bottom of Camera Controls hides or shows the "<name> Stream" title. It needs no permission and is remembered per device (browser `localStorage`), so hiding it on a phone leaves other screens unchanged.
 
-**On phones** (width ≤ 640px, or a landscape phone: height ≤ 500px on a touch screen or a window ≤ 960px wide) the top bar is a single row: a small status pill (e.g. ⚪ Idle, 🟢 Live) and four 44px icon buttons (Home, Logout, ⚙, ⛶). The title sits on one line below it, the temperature shrinks to one line, and Camera Controls packs the tilt/pan pad side by side so a 393×852 phone shows every control without scrolling. Overlays stay clear of the notch in landscape. Desktop, including short desktop windows, keeps the text buttons and full status text.
+**On phones** (width ≤ 640px, or a landscape phone: height ≤ 500px on a touch screen) the top bar is a single row: a small status pill (e.g. ⚪ Idle, 🟢 Live) and four 44px icon buttons (Home, Logout, ⚙, ⛶). The title sits on one line below it, the temperature shrinks to one line, and Camera Controls packs the tilt/pan pad side by side so a 393×852 phone shows every control without scrolling. Overlays stay clear of the notch in landscape. Desktop, including short desktop windows, keeps the text buttons and full status text.
 
 ### Camera configuration reference
 
@@ -163,7 +163,7 @@ Every knob is an env var in `.env` with a safe default — nothing below is requ
 | `CAM_ZOOM` | `1.0` | Startup zoom (1.0 = full field of view). |
 | `CAM_ZOOM_MAX` | `4.0` | Max zoom the `/camera/zoom` endpoint allows. |
 
-Tests: `uv run --no-project --with flask --with python-dotenv python -m unittest discover -s tests` (runs off‑Pi with stubbed camera libs). Add `--with playwright` to also run the phone/desktop layout checks in `tests/test_mobile_ui.py` (Chromium + WebKit; they skip when Playwright or its browsers are missing, unless `DOGCAM_REQUIRE_BROWSER=1` makes that a failure).
+Tests: `uv run --no-project --with flask --with python-dotenv python -m unittest discover -s tests` (runs off‑Pi with stubbed camera libs). Add `--with playwright` to also run the phone/desktop layout checks in `tests/test_mobile_ui.py` (Chromium + WebKit; they skip when Playwright or its browsers are missing, unless `DOGCAM_REQUIRE_BROWSER=1` makes a missing Playwright, Chromium or WebKit a failure).
 
 ## Raspberry Pi setup
 
