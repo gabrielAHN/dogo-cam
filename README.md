@@ -104,6 +104,10 @@ All image tuning (`CAM_*`), day/night switching and digital zoom are **ISP‑sid
 
 **In the web UI**, the ⚙ settings button opens Camera Controls. The **Camera orientation** row switches between **Normal** and **Rotate 180°**, restarts the camera pipeline to apply the transform, and persists the choice across service restarts and reboots. The **Day / Night** row provides **🔄 Auto** (follow the light sensor, the default), **☀️ Light** (force colour), and **🌙 Dark** (force grayscale). Camera-control permission (`DOGCAM_CONTROL_GROUPS`) is required to change either setting; everyone else sees them read-only.
 
+The **Show title** switch at the bottom of Camera Controls hides or shows the "<name> Stream" title. It needs no permission and is remembered per device (browser `localStorage`), so hiding it on a phone leaves other screens unchanged.
+
+**On phones** (width ≤ 640px, or a landscape phone: height ≤ 500px on a touch screen) the top bar is a single row: a small status pill (e.g. ⚪ Idle, 🟢 Live) and four 44px icon buttons (Home, Logout, ⚙, ⛶). The title sits on one line below it, the temperature shrinks to one line, and Camera Controls packs the tilt/pan pad side by side so a 393×852 phone shows every control without scrolling. Overlays stay clear of the notch in landscape. Desktop, including short desktop windows, keeps the text buttons and full status text.
+
 ### Camera configuration reference
 
 Every knob is an env var in `.env` with a safe default — nothing below is required, and unset values keep the sensor/ISP default. Change them without touching code; a restart applies resolution/tuning-file changes, while day/night, saturation, zoom and EV adjust live. The **Default** column is the value shipped in `.env.example` (a few internal code fallbacks differ slightly).
@@ -159,7 +163,7 @@ Every knob is an env var in `.env` with a safe default — nothing below is requ
 | `CAM_ZOOM` | `1.0` | Startup zoom (1.0 = full field of view). |
 | `CAM_ZOOM_MAX` | `4.0` | Max zoom the `/camera/zoom` endpoint allows. |
 
-Tests: `python3 -m unittest tests.test_camera_features` (runs off‑Pi with stubbed camera libs).
+Tests: `uv run --no-project --with flask --with python-dotenv python -m unittest discover -s tests` (runs off‑Pi with stubbed camera libs). Add `--with playwright` to also run the phone/desktop layout checks in `tests/test_mobile_ui.py` (Chromium + WebKit; they skip when Playwright or its browsers are missing, unless `DOGCAM_REQUIRE_BROWSER=1` makes a missing Playwright, Chromium or WebKit a failure).
 
 ## Raspberry Pi setup
 
@@ -210,7 +214,7 @@ Existing installations must reinstall both files after updating the repository; 
 A Pi 3B funnels all current through its micro‑USB / polyfuse (~2–2.5A), so camera + MJPEG encoding + servos can brown out the 5V rail (under‑voltage) even with a strong supply — the camera stalls or the app hangs.
 
 - **`STREAM_MAX_FPS`** (default 15) caps the framerate to cut peak draw — the biggest lever (`vcgencmd get_throttled` non‑zero = dips).
-- Camera acquisition and JPEG encoding are demand-driven: startup configures the camera but leaves it idle; the first visible viewer (or `/snapshot`) starts recording, and `STREAM_IDLE_TIMEOUT` (default 10s) stops it after the final viewer disconnects while keeping the camera configured for a quick restart. Hidden/page-hidden browser tabs close their MJPEG connection and reconnect immediately when visible.
+- Camera acquisition and JPEG encoding are demand-driven: startup configures the camera but leaves it idle; the first viewer (or `/snapshot`) starts recording, and `STREAM_IDLE_TIMEOUT` (default 10s) stops it after the final viewer disconnects while keeping the camera configured for a quick restart. The page closes its MJPEG connection only on `pagehide` (unload); it deliberately ignores Page Visibility, because embedded/background browsers can report "hidden" while still on screen, which froze the feed.
 - Single‑shot autofocus at startup (imx708) avoids continuous AF‑motor draw and PDAF log spam.
 - Real fix: power the servos from a **separate 5V** (common ground), or use a Pi 4/5.
 - **Self‑healing (three layers):**

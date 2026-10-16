@@ -125,7 +125,11 @@ class DemandDrivenStreamingTest(unittest.TestCase):
 
         lease.release()
         self.assertTrue(self.mod.camera_running, "idle timeout should provide a reconnect cooldown")
-        time.sleep(self.mod.STREAM_IDLE_TIMEOUT + 0.08)
+        time.sleep(self.mod.STREAM_IDLE_TIMEOUT)
+        # The idle-stop timer thread can start late on a loaded machine.
+        deadline = time.monotonic() + 2
+        while self.mod.camera_running and time.monotonic() < deadline:
+            time.sleep(0.01)
         self.assertFalse(self.mod.camera_running)
         self.assertIsNotNone(self.mod.camera, "idle stop must keep the camera configured")
         self.assertEqual(self.hw["stops"], 1)
@@ -228,23 +232,36 @@ class DemandDrivenStreamingTest(unittest.TestCase):
             time.sleep(0.005)
         self.assertEqual(self.mod.snapshot_demands, 1)
         self.assertTrue(self.mod.camera_running)
+        # snapshot_demands is bumped before the lease records its frame_id,
+        # both under camera_lock; wait for that section to finish so the
+        # "fresh" frame below is really newer than the lease.
+        with self.mod.camera_lock:
+            pass
         self.mod.output.write(b"fresh-snapshot")
         thread.join(1)
         self.assertEqual(result, {"status": 200, "body": b"fresh-snapshot"})
         self.assertEqual(self.mod.snapshot_demands, 0)
 
-    def test_ui_disconnects_while_hidden_and_never_reconnects_hidden(self):
+    def test_ui_releases_feed_on_pagehide_but_ignores_page_visibility(self):
+        # Embedded/background browsers can report document.hidden while the
+        # page is still on screen; gating the feed on it froze the stream. The
+        # page releases demand only when it is actually unloaded (pagehide).
         with self.mod.app.test_client() as client:
             html = client.get("/", headers=self._headers()).get_data(as_text=True)
+        lifecycle = html.split("const img = document.getElementById('video-feed');", 1)[1]
+        lifecycle = lifecycle.split("</script>", 1)[0]
+        # The browser behaviour (release on pagehide, no reopen while hidden,
+        # reconnect on a back/forward-cache restore) is exercised in
+        # test_mobile_ui.test_feed_reconnects_after_back_forward_cache_restore.
         for marker in (
-            "document.addEventListener('visibilitychange'",
             "window.addEventListener('pagehide'",
-            "document.hidden",
+            "window.addEventListener('pageshow'",
             "img.removeAttribute('src')",
-            "if (document.hidden) return",
             "connect(true)",
         ):
-            self.assertIn(marker, html)
+            self.assertIn(marker, lifecycle)
+        self.assertNotIn("visibilitychange", lifecycle)
+        self.assertNotIn("if (document.hidden)", lifecycle)
 
     def test_ui_resumes_feed_when_visible_and_server_reports_no_demand(self):
         # idle returns healthy:true now, so an unhealthy->healthy transition no
