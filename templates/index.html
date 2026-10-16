@@ -617,8 +617,9 @@
             }
         }
 
-        /* Phones (portrait, and landscape by height): one compact row. */
-        @media (max-width: 640px), (max-height: 500px) {
+        /* Phones: portrait by width; landscape by height, but only on a
+           phone-sized or touch screen so short desktop windows stay desktop. */
+        @media (max-width: 640px), (max-height: 500px) and (max-width: 960px), (max-height: 500px) and (pointer: coarse) {
             #stream-status {
                 top: calc(max(10px, env(safe-area-inset-top)) + 6px);
                 left: max(10px, env(safe-area-inset-left));
@@ -699,7 +700,8 @@
             #stream-title {
                 top: calc(max(10px, env(safe-area-inset-top)) + 52px);
                 margin: 0;
-                max-width: calc(100vw - 24px);
+                /* Centred, so clear the wider of the two side insets on both sides. */
+                max-width: calc(100vw - 24px - 2 * max(env(safe-area-inset-left), env(safe-area-inset-right)));
                 font-size: 20px;
                 line-height: 1.25;
                 white-space: nowrap;
@@ -709,7 +711,7 @@
 
             #temp {
                 bottom: max(10px, env(safe-area-inset-bottom));
-                max-width: calc(100vw - 20px);
+                max-width: calc(100vw - 20px - 2 * max(env(safe-area-inset-left), env(safe-area-inset-right)));
                 box-sizing: border-box;
                 padding: 6px 12px;
                 border-radius: 16px;
@@ -720,12 +722,18 @@
                 text-overflow: ellipsis;
             }
 
+            #servo-controls-modal {
+                box-sizing: border-box;
+                padding: env(safe-area-inset-top) env(safe-area-inset-right)
+                         env(safe-area-inset-bottom) env(safe-area-inset-left);
+            }
+
             #servo-controls {
                 position: relative;
                 box-sizing: border-box;
-                width: calc(100vw - 20px);
-                max-height: calc(100vh - 20px);
-                max-height: calc(100dvh - 20px);
+                width: calc(100vw - 20px - env(safe-area-inset-left) - env(safe-area-inset-right));
+                max-height: calc(100vh - 20px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+                max-height: calc(100dvh - 20px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
                 padding: 12px;
                 gap: 10px;
                 border-radius: 14px;
@@ -1046,6 +1054,10 @@
             const open = modal.classList.toggle('active');
             const settingsBtn = document.getElementById('settings-btn');
             settingsBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+            // Make everything behind the dialog unreachable while it is open.
+            for (const sibling of modal.parentElement.children) {
+                if (sibling !== modal) sibling.inert = open;
+            }
             if (open) {
                 modal.querySelector('.close-modal').focus({ preventScroll: true });
             } else if (modal.contains(document.activeElement) || document.activeElement === document.body) {
@@ -1059,6 +1071,32 @@
                 event.preventDefault();
                 event.stopPropagation();
                 toggleServoModal();
+            } else if (event.key === 'Tab' && modal && modal.classList.contains('active')) {
+                // Cycle focus inside the dialog ourselves: consistent in every
+                // engine (Safari's Tab skips buttons by default).
+                const items = dialogFocusables();
+                if (!items.length) return;
+                event.preventDefault();
+                const index = items.indexOf(document.activeElement);
+                const step = event.shiftKey ? -1 : 1;
+                const next = index === -1 ? (event.shiftKey ? items.length - 1 : 0)
+                                          : (index + step + items.length) % items.length;
+                items[next].focus();
+            }
+        });
+
+        function dialogFocusables() {
+            const dialog = document.getElementById('servo-controls');
+            return [...dialog.querySelectorAll('button, input, a[href], [tabindex]:not([tabindex="-1"])')]
+                .filter(n => !n.disabled && n.getClientRects().length > 0 &&
+                             getComputedStyle(n).visibility !== 'hidden');
+        }
+
+        document.addEventListener('focusin', function(event) {
+            const modal = document.getElementById('servo-controls-modal');
+            if (modal && modal.classList.contains('active') &&
+                !document.getElementById('servo-controls').contains(event.target)) {
+                modal.querySelector('.close-modal').focus({ preventScroll: true });
             }
         });
 
@@ -1568,6 +1606,7 @@
             const baseSrc = img.dataset.src;
             let attempt = 0;
             let timer = null;
+            let pageHidden = false;
 
             function disconnect() {
                 if (timer) {
@@ -1579,11 +1618,13 @@
             }
 
             function connect(immediate = false) {
-                if (timer) return;
+                // Never reopen the stream for a page that is being unloaded or
+                // sits in the back/forward cache.
+                if (timer || pageHidden) return;
                 const delay = immediate ? 0 : Math.min(15000, 1000 * Math.pow(2, attempt++));
                 timer = setTimeout(() => {
                     timer = null;
-                    img.src = baseSrc + '?t=' + Date.now();
+                    if (!pageHidden) img.src = baseSrc + '?t=' + Date.now();
                 }, delay);
             }
 
@@ -1594,7 +1635,20 @@
             img.addEventListener('load', () => { attempt = 0; });
             img.addEventListener('error', reconnect);
 
-            window.addEventListener('pagehide', disconnect);
+            window.addEventListener('pagehide', () => {
+                pageHidden = true;
+                disconnect();
+            });
+            // Back/forward-cache restore: this page released its stream on
+            // pagehide, so reconnect now rather than waiting for the health
+            // poll, which cannot tell while other viewers keep the count > 0.
+            window.addEventListener('pageshow', (event) => {
+                if (!event.persisted && !pageHidden) return;
+                pageHidden = false;
+                attempt = 0;
+                disconnect();
+                connect(true);
+            });
             connect(true);
 
             // A multipart stream that ended without error (server-side frame

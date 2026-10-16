@@ -105,6 +105,14 @@ class MobileTemplateTest(unittest.TestCase):
                        'aria-label="Close camera settings"'):
             self.assertMarker(marker, html)
 
+    def test_phone_overlays_respect_horizontal_safe_areas(self):
+        # viewport-fit=cover lets content run under a landscape notch, so the
+        # centred overlays and the settings sheet must keep clear of it.
+        html = self._html()
+        for selector in ("#stream-title", "#temp", "#servo-controls-modal"):
+            rule = re.search(re.escape(selector) + r"\s*\{[^}]*safe-area-inset-(?:left|right)[^}]*\}", html)
+            self.assertIsNotNone(rule, f"{selector} ignores the horizontal safe area")
+
 
 # --------------------------------------------------------------------------
 # Browser layout checks
@@ -249,6 +257,8 @@ class MobileLayoutBrowserTest(unittest.TestCase):
             except Exception as error:  # pragma: no cover - engine not installed
                 print(f"[mobile-ui] {name} unavailable: {str(error).splitlines()[0]}")
         if not cls.engines:
+            if os.getenv("DOGCAM_REQUIRE_BROWSER"):
+                raise RuntimeError("DOGCAM_REQUIRE_BROWSER is set but no Playwright browser launched")
             raise unittest.SkipTest("no Playwright browser could launch")
 
     @classmethod
@@ -311,23 +321,27 @@ class MobileLayoutBrowserTest(unittest.TestCase):
                         context.close()
 
     def test_desktop_keeps_text_buttons_and_full_status(self):
-        label, width, height = DESKTOP
+        # A short desktop window (e.g. a laptop with a docked console) is not
+        # a phone: it keeps the desktop controls too.
+        sizes = (DESKTOP, ("desktop-short", 1280, 480))
         for engine, browser in self.engines:
-            with self.subTest(engine=engine):
-                context, page = self._page(browser, width, height, touch=False)
-                try:
-                    m = page.evaluate(MEASURE)
-                    by_name = {a["name"]: a for a in m["actions"]}
-                    self.assertEqual(list(by_name), ["Home", "Logout", "Camera settings", "Toggle fullscreen"])
-                    self.assertGreater(by_name["Home"]["w"], 52)
-                    self.assertGreater(by_name["Logout"]["w"], 52)
-                    self.assertIn("Stream Cooling Down", m["status"]["text"])
-                    self.assertEqual(m["h1"]["lines"], 1, m["h1"])
-                    self.assertIn("Room Temp: 27.50°C (81.50°F) | Humidity: 51.0%",
-                                  page.inner_text("#temp"))
-                    self.assertEqual(m["overlaps"], [])
-                finally:
-                    context.close()
+            for label, width, height in sizes:
+                with self.subTest(engine=engine, size=label):
+                    context, page = self._page(browser, width, height, touch=False)
+                    try:
+                        m = page.evaluate(MEASURE)
+                        by_name = {a["name"]: a for a in m["actions"]}
+                        self.assertEqual(list(by_name),
+                                         ["Home", "Logout", "Camera settings", "Toggle fullscreen"])
+                        self.assertGreater(by_name["Home"]["w"], 52)
+                        self.assertGreater(by_name["Logout"]["w"], 52)
+                        self.assertIn("Stream Cooling Down", m["status"]["text"])
+                        self.assertEqual(m["h1"]["lines"], 1, m["h1"])
+                        self.assertIn("Room Temp: 27.50°C (81.50°F) | Humidity: 51.0%",
+                                      page.inner_text("#temp"))
+                        self.assertEqual(m["overlaps"], [])
+                    finally:
+                        context.close()
 
     def test_phone_settings_sheet_fits_and_targets_stay_44px(self):
         # A 393x852 phone shows every panel without scrolling; smaller or
@@ -398,6 +412,48 @@ class MobileLayoutBrowserTest(unittest.TestCase):
                     self.assertFalse(page.is_visible("#settings-btn"))
                     page.tap("#fullscreen-btn")
                     self.assertFalse(page.evaluate("document.body.classList.contains('mobile-fullscreen')"))
+                finally:
+                    context.close()
+
+    def test_settings_dialog_keeps_keyboard_focus_inside(self):
+        inside = "() => document.getElementById('servo-controls').contains(document.activeElement)"
+        for engine, browser in self.engines:
+            for touch, (width, height) in ((True, (393, 852)), (False, DESKTOP[1:])):
+                with self.subTest(engine=engine, size=f"{width}x{height}"):
+                    context, page = self._page(browser, width, height, touch=touch)
+                    try:
+                        page.click("#settings-btn")
+                        page.wait_for_selector("#servo-controls-modal.active")
+                        count = page.evaluate("""() => document.getElementById('servo-controls')
+                            .querySelectorAll('button, input').length""")
+                        for key in ("Tab", "Shift+Tab"):
+                            for step in range(count + 2):
+                                page.keyboard.press(key)
+                                self.assertTrue(page.evaluate(inside),
+                                                f"{key} #{step + 1} left the dialog: "
+                                                + page.evaluate("document.activeElement.outerHTML.slice(0, 80)"))
+                        page.keyboard.press("Escape")
+                        self.assertEqual(page.evaluate("document.activeElement.id"), "settings-btn")
+                    finally:
+                        context.close()
+
+    def test_feed_reconnects_after_back_forward_cache_restore(self):
+        src = "() => document.getElementById('video-feed').getAttribute('src')"
+        for engine, browser in self.engines:
+            with self.subTest(engine=engine):
+                context, page = self._page(browser, 393, 852)
+                try:
+                    page.wait_for_function(f"({src})() !== null")
+                    page.evaluate("() => window.dispatchEvent(new PageTransitionEvent('pagehide', {persisted: true}))")
+                    self.assertIsNone(page.evaluate(src), "pagehide must release the stream")
+                    # A late error from the closed stream must not reopen it.
+                    page.evaluate("() => document.getElementById('video-feed').dispatchEvent(new Event('error'))")
+                    page.wait_for_timeout(1300)
+                    self.assertIsNone(page.evaluate(src), "reconnected while the page was hidden")
+                    # Restored from the back/forward cache: reconnect at once,
+                    # even when other viewers keep the server's count above 0.
+                    page.evaluate("() => window.dispatchEvent(new PageTransitionEvent('pageshow', {persisted: true}))")
+                    page.wait_for_function(f"({src})() !== null", timeout=1000)
                 finally:
                     context.close()
 

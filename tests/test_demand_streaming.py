@@ -250,8 +250,12 @@ class DemandDrivenStreamingTest(unittest.TestCase):
             html = client.get("/", headers=self._headers()).get_data(as_text=True)
         lifecycle = html.split("const img = document.getElementById('video-feed');", 1)[1]
         lifecycle = lifecycle.split("</script>", 1)[0]
+        # The browser behaviour (release on pagehide, no reopen while hidden,
+        # reconnect on a back/forward-cache restore) is exercised in
+        # test_mobile_ui.test_feed_reconnects_after_back_forward_cache_restore.
         for marker in (
-            "window.addEventListener('pagehide', disconnect)",
+            "window.addEventListener('pagehide'",
+            "window.addEventListener('pageshow'",
             "img.removeAttribute('src')",
             "connect(true)",
         ):
