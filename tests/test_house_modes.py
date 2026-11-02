@@ -1114,6 +1114,21 @@ class DocsAndRequirementsTest(unittest.TestCase):
         lines = [line.strip() for line in (ROOT / "requirements.txt").read_text().splitlines()]
         self.assertIn("paho-mqtt==2.1.0", lines)
 
+    def test_pyproject_depends_on_paho_mqtt(self):
+        import tomllib
+
+        project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
+        self.assertIn("paho-mqtt==2.1.0", project["dependencies"])
+
+    def test_readme_says_ky004_runs_from_the_project_venv(self):
+        # The deployed button-control.service runs <checkout>/.venv/bin/python
+        # ky004-control.py, so paho comes from the venv, not the system python3.
+        readme = (ROOT / "README.md").read_text()
+        self.assertNotIn("runs under the system `python3`", readme)
+        paragraphs = [p for p in readme.split("\n\n") if "paho-mqtt" in p and "ky004-control.py" in p]
+        self.assertTrue(paragraphs, "README has no paragraph on installing paho-mqtt for ky004-control.py")
+        self.assertTrue(any(".venv/bin/python" in p for p in paragraphs), paragraphs)
+
     def test_readme_documents_topics_env_and_the_remote_power_file(self):
         readme = (ROOT / "README.md").read_text()
         for needle in (
