@@ -1334,5 +1334,32 @@ class DocsAndRequirementsTest(unittest.TestCase):
             self.assertFalse(dogcam_mqtt.enabled())
 
 
+def unit_settings(name):
+    """Key=value settings of a service_startup unit (last one wins)."""
+    settings = {}
+    for line in (ROOT / "service_startup" / name).read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith(("#", ";", "[")) and "=" in line:
+            key, value = line.split("=", 1)
+            settings[key.strip()] = value.strip()
+    return settings
+
+
+class ExampleUnitTest(unittest.TestCase):
+    def test_example_button_control_unit_runs_the_project_venv_python(self):
+        # Like the live unit: paho-mqtt lives in the project venv, not in the
+        # system python3.
+        unit = unit_settings("button-control.service")
+        checkout = unit["WorkingDirectory"]
+        self.assertEqual(
+            unit["ExecStart"].split(),
+            [f"{checkout}/.venv/bin/python", f"{checkout}/ky004-control.py"],
+        )
+
+    def test_readme_no_longer_says_the_example_unit_uses_the_system_python(self):
+        readme = (ROOT / "README.md").read_text()
+        self.assertFalse("still starts `/usr/bin/python3`" in readme, "README still flags the example unit")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -7,7 +7,9 @@ Type=simple
 User=your-user
 WorkingDirectory=/home/your-user/dogo-cam
 EnvironmentFile=-/home/your-user/dogo-cam/.env
-ExecStart=/usr/bin/python3 /home/your-user/dogo-cam/ky004-control.py
+# The project venv (uv sync / pip install -r requirements.txt) has paho-mqtt;
+# the system python3 does not.
+ExecStart=/home/your-user/dogo-cam/.venv/bin/python /home/your-user/dogo-cam/ky004-control.py
 Restart=always
 RestartSec=10
 
