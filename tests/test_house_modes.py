@@ -332,5 +332,421 @@ class SharedMqttHelperTest(unittest.TestCase):
         self.assertFalse(link.publish(LUX, "{}"))
 
 
+# ---------------------------------------------------------------------------
+# ky004-control.py: remote power
+# ---------------------------------------------------------------------------
+KY004_PATH = ROOT / "ky004-control.py"
+
+
+def load_control():
+    previous = sys.modules.get("lgpio")
+    sys.modules["lgpio"] = types.ModuleType("lgpio")
+    try:
+        spec = importlib.util.spec_from_file_location("ky004_control_house_modes", KY004_PATH)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    finally:
+        if previous is None:
+            sys.modules.pop("lgpio", None)
+        else:
+            sys.modules["lgpio"] = previous
+
+
+def loop_sleep(on_tick):
+    """time.sleep stand-in that reports only the 0.1 s main-loop sleeps."""
+    ticks = {"n": 0}
+
+    def sleep(seconds):
+        if seconds != 0.1:
+            return
+        ticks["n"] += 1
+        on_tick(ticks["n"])
+
+    return sleep
+
+
+def stop_at(tick, actions=None):
+    """on_tick: run actions[n] at loop tick n, raise KeyboardInterrupt at `tick`."""
+    actions = actions or {}
+
+    def on_tick(n):
+        if n in actions:
+            actions[n]()
+        if n >= tick:
+            raise KeyboardInterrupt
+
+    return on_tick
+
+
+class RemotePowerTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.control = load_control()
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = tmp.name
+        self.path = os.path.join(self.dir, "remote-power")
+        self.ON = self.control.SWITCH_ON_VALUE
+        self.OFF = 0 if self.ON else 1  # any GPIO level that is not "ON"
+
+    def new_power(self, path=None):
+        power = self.control.RemotePower(path or self.path)
+        self.addCleanup(power.stop)
+        return power
+
+    def write_file(self, text):
+        with open(self.path, "w") as handle:
+            handle.write(text)
+
+    def read_file(self):
+        with open(self.path) as handle:
+            return handle.read()
+
+    # -- contract constants ------------------------------------------------
+    def test_remote_power_file_and_state_interval_defaults(self):
+        self.assertEqual(self.control.DEFAULT_REMOTE_POWER_FILE, "/var/lib/dogcam/remote-power")
+        self.assertEqual(self.control.POWER_STATE_INTERVAL, 300)
+        with patch.dict(os.environ, {"DOGCAM_REMOTE_POWER_FILE": self.path}):
+            self.assertEqual(load_control().REMOTE_POWER_FILE, self.path)
+
+    # -- effective state -----------------------------------------------------
+    def test_effective_power_truth_table(self):
+        table = {
+            (True, "ON"): True,
+            (True, "OFF"): False,
+            (False, "ON"): False,
+            (False, "OFF"): False,
+        }
+        for (switch_on, remote), expected in table.items():
+            self.assertIs(self.control.effective_power(switch_on, remote), expected, (switch_on, remote))
+        self.assertEqual(self.control.SWITCH_OFF_VALUE, self.OFF)
+        self.assertEqual(self.control.effective_state(self.ON, "ON"), self.ON)
+        self.assertEqual(self.control.effective_state(self.ON, "OFF"), self.OFF)
+        self.assertEqual(self.control.effective_state(self.OFF, "ON"), self.OFF)
+        self.assertEqual(self.control.effective_state(self.OFF, "OFF"), self.OFF)
+
+    def test_effective_state_reads_the_current_remote_by_default(self):
+        power = self.new_power()
+        with patch.object(self.control, "remote_power", power):
+            self.assertEqual(self.control.effective_state(self.ON), self.ON)
+            power.handle_set(b"OFF")
+            self.assertEqual(self.control.effective_state(self.ON), self.OFF)
+
+    # -- payloads --------------------------------------------------------------
+    def test_power_set_payloads_and_empty_default_on(self):
+        power = self.new_power()
+        self.assertEqual(power.remote, "ON")
+        power.handle_set(b" off\n")
+        self.assertEqual(power.remote, "OFF")
+        power.handle_set(b"")
+        self.assertEqual(power.remote, "ON", "a cleared retained message means the default ON")
+        power.handle_set(b"Off")
+        power.handle_set(b"On")
+        self.assertEqual(power.remote, "ON")
+
+    def test_unknown_power_payload_keeps_the_current_mode(self):
+        power = self.new_power()
+        power.handle_set(b"OFF")
+        power.take_change()
+        with self.assertLogs("dogcam_mqtt", level="WARNING"):
+            power.handle_set(b"standby-unknown")
+        self.assertEqual(power.remote, "OFF")
+        self.assertFalse(power.take_change())
+
+    def test_a_remote_change_is_flagged_once_for_the_main_loop(self):
+        power = self.new_power()
+        self.assertFalse(power.take_change())
+        power.handle_set(b"OFF")
+        self.assertTrue(power.take_change())
+        self.assertFalse(power.take_change())
+        power.handle_set(b"OFF")
+        self.assertFalse(power.take_change(), "a repeated value is not a change")
+
+    # -- persistence -----------------------------------------------------------
+    def test_remote_value_is_persisted_as_one_word_atomically(self):
+        power = self.new_power()
+        real_replace = os.replace
+        with patch.object(self.control.os, "replace", side_effect=real_replace) as replace:
+            power.handle_set(b"off")
+        self.assertEqual(self.read_file(), "OFF\n")
+        source, target = replace.call_args.args
+        self.assertEqual(target, self.path)
+        self.assertEqual(os.path.dirname(source), self.dir, "temp file must be on the same filesystem")
+        self.assertEqual(os.listdir(self.dir), ["remote-power"], "no temp files left behind")
+        power.handle_set(b"ON")
+        self.assertEqual(self.read_file(), "ON\n")
+
+    def test_load_remote_power_reads_the_file_and_defaults_to_on(self):
+        self.assertEqual(self.control.load_remote_power(self.path), "ON", "no file -> ON")
+        self.write_file(" off \n")
+        self.assertEqual(self.control.load_remote_power(self.path), "OFF")
+        self.write_file("ON")
+        self.assertEqual(self.control.load_remote_power(self.path), "ON")
+        self.write_file("garbage")
+        with self.assertLogs(level="WARNING"):
+            self.assertEqual(self.control.load_remote_power(self.path), "ON")
+
+    def test_an_unwritable_state_file_does_not_block_the_remote_command(self):
+        blocker = os.path.join(self.dir, "not-a-dir")
+        with open(blocker, "w") as handle:
+            handle.write("x")
+        power = self.new_power(os.path.join(blocker, "remote-power"))
+        with self.assertLogs(level="ERROR"):
+            power.handle_set(b"OFF")
+        self.assertEqual(power.remote, "OFF")
+        self.assertTrue(power.take_change())
+
+    # -- startup -----------------------------------------------------------------
+    def test_mqtt_disabled_uses_the_persisted_file_and_builds_no_client(self):
+        self.write_file("OFF\n")
+        power = self.new_power()
+        with patch.dict(os.environ, {"DOGCAM_MQTT": "0"}), fake_paho() as paho:
+            link = self.control.start_remote_power(power, wait=0)
+        self.assertIsNone(link)
+        self.assertEqual(power.remote, "OFF")
+        self.assertEqual(paho.instances, [])
+
+    def test_mqtt_disabled_never_imports_paho(self):
+        self.write_file("OFF\n")
+        power = self.new_power()
+        with patch.dict(os.environ, {"DOGCAM_MQTT": "0"}), blocked_paho():
+            self.assertIsNone(self.control.start_remote_power(power, wait=0))
+        self.assertEqual(power.remote, "OFF")
+
+    def test_unreachable_broker_falls_back_to_the_persisted_file(self):
+        self.write_file("OFF\n")
+        power = self.new_power()
+        with patch.dict(os.environ, {"DOGCAM_MQTT": "1"}), fake_paho(reachable=False) as paho:
+            link = self.control.start_remote_power(power, wait=0.05)
+        self.assertIsNotNone(link)
+        self.assertEqual(len(paho.instances), 1)
+        self.assertFalse(link.connected.is_set())
+        self.assertEqual(power.remote, "OFF")
+
+    def test_no_file_and_no_broker_means_on(self):
+        power = self.new_power()
+        with patch.dict(os.environ, {"DOGCAM_MQTT": "1"}), fake_paho(reachable=False):
+            self.control.start_remote_power(power, wait=0.05)
+        self.assertEqual(power.remote, "ON")
+        self.assertFalse(os.path.exists(self.path), "nothing to persist without a broker value")
+
+    def test_missing_paho_falls_back_to_the_persisted_file(self):
+        self.write_file("OFF\n")
+        power = self.new_power()
+        with patch.dict(os.environ, {"DOGCAM_MQTT": "1"}), blocked_paho():
+            self.assertIsNone(self.control.start_remote_power(power, wait=0))
+        self.assertEqual(power.remote, "OFF")
+
+    def test_retained_broker_value_wins_at_start_and_is_persisted(self):
+        self.write_file("ON\n")
+        power = self.new_power()
+        started = time.monotonic()
+        with patch.dict(os.environ, {"DOGCAM_MQTT": "1"}), \
+                fake_paho(reachable=True, retained={POWER_SET: b"OFF"}):
+            self.control.start_remote_power(power, wait=3)
+        self.assertLess(time.monotonic() - started, 2, "start must not wait once the value arrived")
+        self.assertEqual(power.remote, "OFF")
+        self.assertEqual(self.read_file(), "OFF\n")
+
+    def test_power_client_identity_lwt_and_online_status(self):
+        power = self.new_power()
+        env = {"DOGCAM_MQTT": "1"}
+        with patch.dict(os.environ, env), fake_paho(reachable=True) as paho:
+            os.environ.pop("DOGCAM_MQTT_HOST", None)
+            os.environ.pop("DOGCAM_MQTT_PORT", None)
+            os.environ.pop("DOGCAM_MQTT_POWER_CLIENT_ID", None)
+            link = self.control.start_remote_power(power, wait=0)
+            self.assertTrue(wait_until(link.connected.is_set))
+        client = paho.instances[0]
+        self.assertEqual(client.client_id, "dogo-cam-power")
+        self.assertEqual(client.connect_args, ("192.168.50.211", 1883, 60))
+        self.assertEqual(client.will, (STATUS, "offline", 1, True))
+        self.assertLess(client.calls.index("will_set"), client.calls.index("connect_async"))
+        self.assertIn((STATUS, "online", 1, True), client.published)
+        self.assertIn((POWER_SET, 1), client.subscribed)
+
+    def test_power_client_id_is_env_overridable(self):
+        power = self.new_power()
+        with patch.dict(os.environ, {"DOGCAM_MQTT": "1", "DOGCAM_MQTT_POWER_CLIENT_ID": "bench-power"}), \
+                fake_paho() as paho:
+            self.control.start_remote_power(power, wait=0)
+        self.assertEqual(paho.instances[0].client_id, "bench-power")
+
+    # -- state topic ---------------------------------------------------------------
+    def test_state_json_has_exactly_the_contract_keys(self):
+        power = self.new_power()
+        cases = [
+            (True, "ON", {"remote": "ON", "switch": "ON", "camera": "ON"}),
+            (True, "OFF", {"remote": "OFF", "switch": "ON", "camera": "OFF"}),
+            (False, "ON", {"remote": "ON", "switch": "OFF", "camera": "OFF"}),
+            (False, "OFF", {"remote": "OFF", "switch": "OFF", "camera": "OFF"}),
+        ]
+        for switch_on, remote, expected in cases:
+            power.set_switch(switch_on)
+            power.remote = remote
+            payload = power.state_payload()
+            self.assertEqual(set(payload), {"remote", "switch", "camera", "t"})
+            self.assertIsInstance(payload["t"], int)
+            self.assertLessEqual(abs(payload["t"] - time.time()), 5)
+            self.assertEqual({k: payload[k] for k in ("remote", "switch", "camera")}, expected)
+
+    def _state_messages(self, client):
+        return [
+            (json.loads(payload), qos, retain)
+            for topic, payload, qos, retain in list(client.published)
+            if topic == POWER_STATE
+        ]
+
+    def test_state_is_published_retained_on_connect_and_on_every_change(self):
+        power = self.new_power()
+        power.set_switch(True)
+        with patch.dict(os.environ, {"DOGCAM_MQTT": "1"}), fake_paho(reachable=True) as paho:
+            self.control.start_remote_power(power, wait=0)
+        client = paho.instances[0]
+        self.assertTrue(wait_until(lambda: self._state_messages(client)))
+        first, qos, retain = self._state_messages(client)[0]
+        self.assertEqual((qos, retain), (1, True))
+        self.assertEqual(set(first), {"remote", "switch", "camera", "t"})
+        self.assertEqual(first["camera"], "ON")
+
+        client.deliver(POWER_SET, b"OFF")
+        self.assertTrue(wait_until(
+            lambda: any(m["remote"] == "OFF" and m["camera"] == "OFF" for m, _, _ in self._state_messages(client))
+        ))
+        power.set_switch(False)
+        self.assertTrue(wait_until(
+            lambda: any(m["switch"] == "OFF" for m, _, _ in self._state_messages(client))
+        ))
+
+    def test_state_is_republished_every_interval_without_changes(self):
+        power = self.new_power()
+        power.set_switch(True)
+        with patch.object(self.control, "POWER_STATE_INTERVAL", 0.05), \
+                patch.dict(os.environ, {"DOGCAM_MQTT": "1"}), fake_paho(reachable=True) as paho:
+            self.control.start_remote_power(power, wait=0)
+            client = paho.instances[0]
+            self.assertTrue(wait_until(lambda: len(self._state_messages(client)) >= 3))
+
+    def test_state_is_not_published_before_the_switch_is_known(self):
+        power = self.new_power()
+        with patch.dict(os.environ, {"DOGCAM_MQTT": "1"}), fake_paho(reachable=True) as paho:
+            link = self.control.start_remote_power(power, wait=0)
+            self.assertTrue(wait_until(link.connected.is_set))
+        time.sleep(0.05)
+        self.assertEqual(self._state_messages(paho.instances[0]), [])
+
+    # -- main loops ----------------------------------------------------------------
+    def _run_always_on(self, power, moments, on_tick):
+        applied = []
+        fake_time = types.SimpleNamespace(time=moments, sleep=loop_sleep(on_tick))
+        with patch.multiple(
+            self.control,
+            remote_power=power,
+            time=fake_time,
+            apply_state=lambda state, force_led=False: applied.append((state, force_led)),
+        ):
+            self.control.run_always_on()
+        return applied
+
+    def test_always_on_mode_follows_the_remote_and_reconcile_keeps_it_off(self):
+        power = self.new_power()
+        power.handle_set(b"OFF")
+        moments = iter([0.0, 6.0, 6.0])
+        applied = self._run_always_on(power, lambda: next(moments), stop_at(1))
+        self.assertEqual(applied, [(self.OFF, True), (self.OFF, False)])
+        self.assertTrue(power.switch_on, "always-on mode reports the switch as ON")
+
+    def test_always_on_mode_applies_a_remote_change_at_once(self):
+        power = self.new_power()
+        actions = {1: lambda: power.handle_set(b"OFF"), 2: lambda: power.handle_set(b"ON")}
+        applied = self._run_always_on(power, lambda: 0.0, stop_at(3, actions))
+        self.assertEqual(applied, [(self.ON, True), (self.OFF, True), (self.ON, True)])
+
+    def _run_gpio(self, power, switch_value, on_tick, clock=None):
+        applied = []
+        closed = []
+
+        class FakeGPIO:
+            SET_PULL_UP = 32
+            SET_PULL_DOWN = 64
+
+            def gpiochip_open(self, _chip):
+                return 3
+
+            def gpio_read(self, _handle, _pin):
+                return switch_value()
+
+            def gpiochip_close(self, handle):
+                closed.append(handle)
+
+        fake_time = types.SimpleNamespace(time=clock or (lambda: 0.0), sleep=loop_sleep(on_tick))
+        with patch.multiple(
+            self.control,
+            remote_power=power,
+            lgpio=FakeGPIO(),
+            SWITCH_MODE="gpio",
+            read_pull_value=lambda *_args, **_kwargs: 0,
+            time=fake_time,
+            apply_state=lambda state, force_led=False: applied.append((state, force_led)),
+        ):
+            self.control.main()
+        self.assertEqual(closed, [3])
+        return applied
+
+    def test_gpio_switch_on_with_remote_off_stays_off_through_the_reconcile(self):
+        power = self.new_power()
+        power.handle_set(b"OFF")
+        now = {"t": 0.0}
+
+        def advance():
+            now["t"] += 6.0
+
+        applied = self._run_gpio(
+            power, lambda: self.ON, stop_at(2, {1: advance}), clock=lambda: now["t"]
+        )
+        self.assertEqual(applied, [(self.OFF, True), (self.OFF, False)])
+        self.assertTrue(power.switch_on)
+
+    def test_gpio_remote_change_is_applied_before_the_next_reconcile(self):
+        power = self.new_power()
+        actions = {1: lambda: power.handle_set(b"OFF"), 2: lambda: power.handle_set(b"")}
+        applied = self._run_gpio(power, lambda: self.ON, stop_at(3, actions))
+        self.assertEqual(applied, [(self.ON, True), (self.OFF, True), (self.ON, True)])
+
+    def test_gpio_switch_off_keeps_the_camera_off_whatever_the_remote(self):
+        power = self.new_power()
+        applied = self._run_gpio(power, lambda: self.OFF, stop_at(2, {1: lambda: power.handle_set(b"ON")}))
+        self.assertEqual(applied, [(self.OFF, True)])
+        self.assertFalse(power.switch_on)
+
+    def test_led_shows_the_effective_state(self):
+        calls = []
+        with patch.multiple(
+            self.control,
+            site_up=lambda: False,
+            service_state=lambda _name: "inactive",
+            led_on=lambda: calls.append("led_on"),
+            led_off=lambda: calls.append("led_off"),
+            start=lambda: calls.append("start"),
+            stop=lambda: calls.append("stop"),
+        ):
+            self.control.apply_state(self.control.effective_state(self.ON, "OFF"), force_led=True)
+        self.assertEqual(calls, ["led_off"], "switch ON + remote OFF must show OFF and start nothing")
+
+    def test_main_itself_never_opens_mqtt_only_the_script_entry_does(self):
+        # start_remote_power runs from the __main__ block only, so importing the
+        # module or calling main() (as test_switch_mode does) never opens MQTT.
+        with patch.dict(os.environ, {"DOGCAM_MQTT": "1"}), fake_paho(reachable=True) as paho, \
+                patch.multiple(self.control, SWITCH_MODE="always-on", run_always_on=lambda: None):
+            self.control.main()
+        self.assertEqual(paho.instances, [])
+        main_block = KY004_PATH.read_text().split('if __name__ == "__main__":', 1)[1]
+        self.assertLess(main_block.index("start_remote_power()"), main_block.index("main()"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
