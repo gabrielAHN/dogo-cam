@@ -748,5 +748,366 @@ class RemotePowerTest(unittest.TestCase):
         self.assertLess(main_block.index("start_remote_power()"), main_block.index("main()"))
 
 
+# ---------------------------------------------------------------------------
+# dogcam_stream.py: lux metering
+# ---------------------------------------------------------------------------
+from test_demand_streaming import _install_hardware_stubs  # noqa: E402
+
+STREAM_ENV = {
+    "TRUST_PROXY_AUTH_HEADERS": "1",
+    "SECRET_KEY": "test",
+    "DAYNIGHT_AUTO": "0",
+    "STREAM_FRAME_TIMEOUT": "0.2",
+    "STREAM_IDLE_TIMEOUT": "0.05",
+    "STREAM_STALL_RESTART_AFTER": "60",
+    "STREAM_STALL_CHECK_INTERVAL": "60",
+}
+
+
+def import_stream():
+    """Fresh dogcam_stream import on stub camera libs (as test_demand_streaming)."""
+    hw = _install_hardware_stubs()
+    for name in ("dogcam_stream", "servo_control_rpigpio"):
+        sys.modules.pop(name, None)
+    import dogcam_stream
+
+    return dogcam_stream, hw
+
+
+def thread_names():
+    return [thread.name for thread in threading.enumerate()]
+
+
+class FakeLink:
+    def __init__(self):
+        self.published = []
+
+    def publish(self, topic, payload, retain=True):
+        self.published.append((topic, payload, retain))
+        return True
+
+    def lux_messages(self):
+        return [json.loads(payload) for topic, payload, _retain in list(self.published) if topic == LUX]
+
+
+class LuxMeterTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.environ = patch.dict(os.environ, dict(STREAM_ENV, DOGCAM_MQTT="0"))
+        cls.environ.start()
+        os.environ.pop("DOGCAM_METER_INTERVAL", None)
+        lux_threads_before = thread_names().count("lux-meter")
+        with fake_paho(reachable=True) as paho:
+            cls.mod, cls.hw = import_stream()
+        cls.paho = paho
+        # getattr: keep the fixture independent of the API under test.
+        cls.link_at_import = getattr(cls.mod, "mqtt_link", "<missing>")
+        cls.meter_thread_at_import = getattr(cls.mod, "meter_thread", "<missing>")
+        cls.new_lux_threads = thread_names().count("lux-meter") - lux_threads_before
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.mod.cleanup()
+        cls.environ.stop()
+
+    def setUp(self):
+        m = self.mod
+        with m.camera_lock:
+            if m.camera_running:
+                m._stop_recording_locked()
+            m.active_viewers = 0
+            m.snapshot_demands = 0
+            m._invalidate_idle_stop_locked()
+            m.output.clear()
+        self.hw["starts"] = 0
+        self.hw["stops"] = 0
+        if hasattr(m, "meter_enabled"):
+            m.meter_enabled.clear()
+        m.last_lux = None
+        m.last_lux_at = None
+        self.link = FakeLink()
+        patcher = patch.object(m, "mqtt_link", self.link, create=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def demand_spies(self):
+        m = self.mod
+        acquire = patch.object(m, "acquire_stream_demand", wraps=m.acquire_stream_demand)
+        release = patch.object(m, "release_stream_demand", wraps=m.release_stream_demand)
+        return acquire, release
+
+    def metadata(self, **kwargs):
+        return patch.object(self.mod.camera, "capture_metadata", **kwargs)
+
+    # -- contract constants and import behaviour ---------------------------
+    def test_meter_defaults(self):
+        self.assertEqual(self.mod.METER_INTERVAL, 60)
+        self.assertEqual(self.mod.METER_FRESH_SECONDS, 15)
+        self.assertEqual(self.mod.METER_SAMPLE_TIMEOUT, 5)
+        self.assertFalse(self.mod.meter_enabled.is_set(), "metering is OFF until meter/set says ON")
+
+    def test_mqtt_disabled_import_builds_no_client_and_starts_no_thread(self):
+        self.assertEqual(self.paho.instances, [])
+        self.assertIsNone(self.link_at_import)
+        self.assertIsNone(self.meter_thread_at_import)
+        self.assertEqual(self.new_lux_threads, 0)
+
+    def test_no_new_http_routes(self):
+        rules = [rule.rule for rule in self.mod.app.url_map.iter_rules()]
+        for word in ("lux", "meter", "mqtt", "power"):
+            self.assertFalse([rule for rule in rules if word in rule.lower()], word)
+
+    # -- meter/set ------------------------------------------------------------
+    def test_meter_set_payloads_and_empty_default_off(self):
+        m = self.mod
+        m.on_meter_set(b" on \n")
+        self.assertTrue(m.meter_enabled.is_set())
+        m.on_meter_set(b"")
+        self.assertFalse(m.meter_enabled.is_set(), "a cleared retained message means the default OFF")
+        m.on_meter_set(b"On")
+        with self.assertLogs("dogcam_mqtt", level="WARNING"):
+            m.on_meter_set(b"sometimes-meter")
+        self.assertTrue(m.meter_enabled.is_set(), "unknown payload keeps the current mode")
+        m.on_meter_set(b"OFF")
+        self.assertFalse(m.meter_enabled.is_set())
+
+    # -- sampling ---------------------------------------------------------------
+    def test_meter_off_takes_no_sample(self):
+        acquire, release = self.demand_spies()
+        with acquire as acquired, release, self.metadata(return_value={"Lux": 10.0}) as capture:
+            self.assertIsNone(self.mod.meter_tick())
+        acquired.assert_not_called()
+        capture.assert_not_called()
+        self.assertEqual(self.hw["starts"], 0)
+        self.assertEqual(self.link.published, [])
+
+    def test_idle_camera_samples_through_a_released_snapshot_demand(self):
+        self.mod.on_meter_set(b"ON")
+        acquire, release = self.demand_spies()
+        with acquire as acquired, release as released, self.metadata(return_value={"Lux": 123.44}):
+            payload = self.mod.meter_tick()
+        acquired.assert_called_once_with("snapshot")
+        released.assert_called_once_with("snapshot")
+        self.assertEqual(self.mod.snapshot_demands, 0)
+        self.assertEqual(self.hw["starts"], 1, "an idle camera is started for the sample")
+        self.assertEqual(set(payload), {"lux", "t", "source"})
+        self.assertEqual(payload["lux"], 123.4)
+        self.assertEqual(payload["source"], "sample")
+        self.assertIsInstance(payload["t"], int)
+        self.assertLessEqual(abs(payload["t"] - time.time()), 5)
+        self.assertEqual(self.link.published, [(LUX, json.dumps(payload), True)])
+
+    def test_sample_timeout_releases_the_demand_and_publishes_nothing(self):
+        self.mod.on_meter_set(b"ON")
+        acquire, release = self.demand_spies()
+        started = time.monotonic()
+        with patch.object(self.mod, "METER_SAMPLE_TIMEOUT", 0.2), acquire as acquired, \
+                release as released, self.metadata(return_value={"ExposureTime": 1000}):
+            self.assertIsNone(self.mod.meter_tick())
+        self.assertLess(time.monotonic() - started, 1.5)
+        acquired.assert_called_once_with("snapshot")
+        released.assert_called_once_with("snapshot")
+        self.assertEqual(self.mod.snapshot_demands, 0)
+        self.assertEqual(self.link.published, [])
+
+    def test_metadata_errors_release_the_demand(self):
+        self.mod.on_meter_set(b"ON")
+        acquire, release = self.demand_spies()
+        with patch.object(self.mod, "METER_SAMPLE_TIMEOUT", 0.2), acquire, release as released, \
+                self.metadata(side_effect=RuntimeError("Camera frontend has timed out")):
+            self.assertIsNone(self.mod.meter_tick())
+        released.assert_called_once_with("snapshot")
+        self.assertEqual(self.mod.snapshot_demands, 0)
+        self.assertEqual(self.link.published, [])
+
+    def test_an_exception_while_sampling_still_releases_the_demand(self):
+        self.mod.on_meter_set(b"ON")
+        acquire, release = self.demand_spies()
+        with acquire, release as released, \
+                patch.object(self.mod, "_wait_for_metadata_lux", side_effect=RuntimeError("boom")):
+            self.assertIsNone(self.mod.meter_tick())
+        released.assert_called_once_with("snapshot")
+        self.assertEqual(self.mod.snapshot_demands, 0)
+        self.assertEqual(self.link.published, [])
+
+    def test_a_hung_metadata_read_is_bounded_and_released(self):
+        self.mod.on_meter_set(b"ON")
+        gate = threading.Event()
+
+        def hang():
+            gate.wait(5)
+            return {"Lux": 1.0}
+
+        acquire, release = self.demand_spies()
+        started = time.monotonic()
+        try:
+            with patch.object(self.mod, "METER_SAMPLE_TIMEOUT", 0.2), acquire, release as released, \
+                    self.metadata(side_effect=hang):
+                self.assertIsNone(self.mod.meter_tick())
+                elapsed = time.monotonic() - started
+        finally:
+            gate.set()
+            reader = getattr(self.mod, "_lux_reader", None)
+            if reader is not None:
+                reader.join(2)
+        self.assertLess(elapsed, 1.5, "the 5 s wait bound must hold even if capture_metadata hangs")
+        released.assert_called_once_with("snapshot")
+        self.assertEqual(self.mod.snapshot_demands, 0)
+
+    def test_running_camera_with_fresh_lux_publishes_stream_without_extra_demand(self):
+        m = self.mod
+        lease = m.acquire_stream_demand("viewer")
+        self.addCleanup(lease.release)
+        with self.metadata(return_value={"Lux": 42.04}):
+            self.assertEqual(m.read_lux(), 42.04)  # the day/night monitor's metadata path
+        m.on_meter_set(b"ON")
+        acquire, release = self.demand_spies()
+        with acquire as acquired, release:
+            payload = m.meter_tick()
+        acquired.assert_not_called()
+        self.assertEqual(m.snapshot_demands, 0)
+        self.assertEqual(self.hw["starts"], 1, "only the viewer started the camera")
+        self.assertEqual(payload["source"], "stream")
+        self.assertEqual(payload["lux"], 42.0)
+        self.assertEqual(self.link.lux_messages(), [payload])
+
+    def test_running_camera_with_stale_lux_takes_a_sample(self):
+        m = self.mod
+        lease = m.acquire_stream_demand("viewer")
+        self.addCleanup(lease.release)
+        m.last_lux = 42.0
+        m.last_lux_at = time.monotonic() - 16
+        m.on_meter_set(b"ON")
+        acquire, release = self.demand_spies()
+        with acquire as acquired, release as released, self.metadata(return_value={"Lux": 7.25}):
+            payload = m.meter_tick()
+        acquired.assert_called_once_with("snapshot")
+        released.assert_called_once_with("snapshot")
+        self.assertEqual(payload["source"], "sample")
+        self.assertEqual(payload["lux"], 7.2)
+        self.assertEqual(self.hw["starts"], 1, "the camera was already running")
+        self.assertEqual(m.active_viewers, 1)
+
+    def test_a_recent_reading_from_a_stopped_camera_is_not_reused(self):
+        m = self.mod
+        m.last_lux = 42.0
+        m.last_lux_at = time.monotonic()
+        m.on_meter_set(b"ON")
+        acquire, release = self.demand_spies()
+        with acquire as acquired, release, self.metadata(return_value={"Lux": 3.0}):
+            payload = m.meter_tick()
+        acquired.assert_called_once_with("snapshot")
+        self.assertEqual((payload["lux"], payload["source"]), (3.0, "sample"))
+
+    def test_unavailable_camera_publishes_nothing(self):
+        self.mod.on_meter_set(b"ON")
+        with patch.object(self.mod, "camera_available", False):
+            self.assertIsNone(self.mod.meter_tick())
+        self.assertEqual(self.mod.snapshot_demands, 0)
+        self.assertEqual(self.link.published, [])
+
+    # -- the metering thread ----------------------------------------------------
+    def run_meter_loop(self):
+        m = self.mod
+        m._meter_stop.clear()
+        thread = threading.Thread(target=m.monitor_meter, daemon=True)
+        thread.start()
+
+        def stop():
+            m._meter_stop.set()
+            m._meter_wake.set()
+            thread.join(2)
+            m._meter_stop.clear()
+            m._meter_wake.clear()
+
+        self.addCleanup(stop)
+        return thread
+
+    def test_meter_loop_samples_at_least_every_interval_only_while_on(self):
+        m = self.mod
+        with patch.object(m, "METER_INTERVAL", 0.05):
+            self.run_meter_loop()
+            time.sleep(0.25)
+            self.assertEqual(self.link.published, [], "metering OFF: no sampling")
+            self.assertEqual(self.hw["starts"], 0)
+            m.on_meter_set(b"ON")
+            self.assertTrue(wait_until(lambda: len(self.link.lux_messages()) >= 3))
+            m.on_meter_set(b"OFF")
+            time.sleep(0.1)
+            settled = len(self.link.published)
+            time.sleep(0.25)
+            self.assertEqual(len(self.link.published), settled, "metering OFF stops sampling")
+        self.assertEqual(m.snapshot_demands, 0)
+
+    def test_meter_on_wakes_the_loop_immediately(self):
+        m = self.mod
+        with patch.object(m, "METER_INTERVAL", 60):
+            self.run_meter_loop()
+            time.sleep(0.05)
+            m.on_meter_set(b"ON")
+            self.assertTrue(wait_until(lambda: self.link.lux_messages(), timeout=2))
+
+
+class StreamMqttStartupTest(unittest.TestCase):
+    """Importing dogcam_stream with MQTT on (fake paho) and off (no paho)."""
+
+    def setUp(self):
+        environ = patch.dict(os.environ, STREAM_ENV)
+        environ.start()
+        self.addCleanup(environ.stop)
+
+    def test_mqtt_off_needs_no_paho_and_starts_nothing(self):
+        before = thread_names().count("lux-meter")
+        with patch.dict(os.environ, {"DOGCAM_MQTT": "0"}), blocked_paho():
+            mod, _hw = import_stream()
+        self.addCleanup(mod.cleanup)
+        self.assertIsNone(mod.mqtt_link)
+        self.assertIsNone(mod.meter_thread)
+        self.assertEqual(thread_names().count("lux-meter"), before)
+
+    def test_mqtt_on_builds_one_stream_client_and_the_meter_thread(self):
+        env = {"DOGCAM_MQTT": "1", "DOGCAM_METER_INTERVAL": "7"}
+        with patch.dict(os.environ, env), fake_paho(reachable=False) as paho:
+            for name in ("DOGCAM_MQTT_HOST", "DOGCAM_MQTT_PORT", "DOGCAM_MQTT_STREAM_CLIENT_ID"):
+                os.environ.pop(name, None)
+            mod, hw = import_stream()
+            self.addCleanup(mod.cleanup)
+            self.assertIs(mod.start_mqtt(), mod.mqtt_link, "one MQTT client per process")
+        self.assertEqual(mod.METER_INTERVAL, 7)
+        self.assertEqual(len(paho.instances), 1)
+        client = paho.instances[0]
+        self.assertEqual(client.client_id, "dogo-cam-stream")
+        self.assertEqual(client.connect_args, ("192.168.50.211", 1883, 60))
+        self.assertIsNone(client.will, "status/LWT belongs to the ky004-control client")
+        self.assertTrue(mod.meter_thread.is_alive())
+        self.assertTrue(mod.meter_thread.daemon)
+
+        client.fire_connect()
+        self.assertEqual(client.subscribed, [(METER_SET, 1)])
+        self.assertFalse([p for p in client.published if p[0] == STATUS])
+
+        client.deliver(METER_SET, b"ON")
+        self.assertTrue(mod.meter_enabled.is_set())
+        self.assertTrue(wait_until(lambda: any(p[0] == LUX for p in client.published)))
+        topic, payload, qos, retain = next(p for p in client.published if p[0] == LUX)
+        self.assertEqual((qos, retain), (1, True))
+        message = json.loads(payload)
+        self.assertEqual(set(message), {"lux", "t", "source"})
+        self.assertEqual(message["source"], "sample")
+        self.assertTrue(wait_until(lambda: mod.snapshot_demands == 0))
+
+        mod.cleanup()
+        mod.meter_thread.join(2)
+        self.assertFalse(mod.meter_thread.is_alive(), "cleanup stops the meter thread")
+        self.assertTrue(client.disconnected)
+
+    def test_stream_client_id_is_env_overridable(self):
+        env = {"DOGCAM_MQTT": "1", "DOGCAM_MQTT_STREAM_CLIENT_ID": "bench-stream"}
+        with patch.dict(os.environ, env), fake_paho() as paho:
+            mod, _hw = import_stream()
+            self.addCleanup(mod.cleanup)
+        self.assertEqual([c.client_id for c in paho.instances], ["bench-stream"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

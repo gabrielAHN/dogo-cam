@@ -28,6 +28,8 @@ from flask import (
 )
 from werkzeug.middleware.proxy_fix import ProxyFix
 
+import dogcam_mqtt
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -376,6 +378,7 @@ _daynight_lock = threading.Lock()
 current_mode = "day"          # active image mode: "day" | "night"
 _mode_override = DAYNIGHT_MODE_OVERRIDE
 last_lux = None
+last_lux_at = None  # time.monotonic() of the last AE reading that carried Lux
 
 
 def _frame_limits(fps):
@@ -477,16 +480,30 @@ def apply_adaptive(lux):
     logger.info(f"Adaptive ({current_mode}, {lux:.0f} lux): {new}")
 
 
+def _metadata_lux():
+    """Lux carried by the camera's next metadata, recorded as last_lux.
+
+    None when the camera is not recording or the metadata has no Lux; camera
+    errors propagate. Shared by the day/night monitor and the lux meter.
+    """
+    global last_lux, last_lux_at
+    cam = camera
+    if cam is None or not camera_running:
+        return None
+    lux = cam.capture_metadata().get("Lux")
+    if lux is None:
+        return None
+    last_lux = float(lux)
+    last_lux_at = time.monotonic()
+    return last_lux
+
+
 def read_lux():
     """Latest scene brightness from the camera AE meter. None if unavailable."""
-    global last_lux
     if camera is None or not camera_running:
         return None
     try:
-        md = camera.capture_metadata()
-        lux = md.get("Lux")
-        if lux is not None:
-            last_lux = float(lux)
+        _metadata_lux()
         return last_lux
     except Exception as e:
         logger.debug(f"read_lux failed: {e}")
@@ -1082,6 +1099,11 @@ def check_shutdown_and_stop_camera():
 def cleanup():
     global camera_running
 
+    _meter_stop.set()
+    _meter_wake.set()
+    if mqtt_link is not None:
+        mqtt_link.stop()
+
     with camera_lock:
         _invalidate_idle_stop_locked()
         if camera_running and camera is not None:
@@ -1093,6 +1115,160 @@ def cleanup():
 
     if servo_available and servo_controller:
         servo_controller.cleanup()
+
+
+# ---------------------------------------------------------------------------
+# Lux metering for Home Assistant (house modes). While the retained
+# jg-casa/dogo-cam/meter/set is ON, publish the AE meter's Lux to
+# jg-casa/dogo-cam/lux at least every DOGCAM_METER_INTERVAL seconds. A fresh
+# reading from a camera that is already running for viewers is reused;
+# otherwise a short sample borrows the snapshot demand, so the idle-stop timer
+# and demand accounting work exactly as for /snapshot.
+# ---------------------------------------------------------------------------
+METER_INTERVAL = max(1.0, _env_float("DOGCAM_METER_INTERVAL", 60.0))
+METER_FRESH_SECONDS = 15.0  # reuse a running camera's Lux up to this age
+METER_SAMPLE_TIMEOUT = 5.0  # max wait for metadata carrying Lux during a sample
+meter_enabled = threading.Event()  # meter/set ON
+_meter_wake = threading.Event()
+_meter_stop = threading.Event()
+_lux_reader = None
+_mqtt_start_lock = threading.Lock()
+mqtt_link = None
+meter_thread = None
+
+
+def on_meter_set(payload):
+    """paho thread: a jg-casa/dogo-cam/meter/set message."""
+    value = dogcam_mqtt.parse_on_off(
+        payload, dogcam_mqtt.METER_DEFAULT, dogcam_mqtt.METER_SET_TOPIC
+    )
+    if value is None:
+        return
+    was_on = meter_enabled.is_set()
+    if value == "ON":
+        meter_enabled.set()
+    else:
+        meter_enabled.clear()
+    if was_on != meter_enabled.is_set():
+        logger.info(f"Lux metering {value}")
+    _meter_wake.set()
+
+
+def _wait_for_metadata_lux(timeout):
+    """Wait up to `timeout` s for camera metadata carrying Lux.
+
+    capture_metadata() blocks for the next frame and never returns on a wedged
+    pipeline, so the read runs on a helper thread the meter can abandon; at
+    most one such reader exists at a time.
+    """
+    global _lux_reader
+    if _lux_reader is not None and _lux_reader.is_alive():
+        logger.warning("Lux meter: an earlier metadata read is still blocked; skipping")
+        return None
+    found = {}
+    done = threading.Event()
+    give_up = threading.Event()
+
+    def read():
+        try:
+            while not give_up.is_set():
+                try:
+                    lux = _metadata_lux()
+                except Exception as e:
+                    logger.debug(f"Lux meter metadata read failed: {e}")
+                    lux = None
+                if lux is not None:
+                    found["lux"] = lux
+                    return
+                give_up.wait(0.05)
+        finally:
+            done.set()
+
+    _lux_reader = threading.Thread(target=read, daemon=True, name="lux-meter-read")
+    _lux_reader.start()
+    done.wait(timeout)
+    give_up.set()
+    return found.get("lux")
+
+
+def sample_lux():
+    """Take a short Lux sample under a snapshot demand, released on every path."""
+    lease = acquire_stream_demand("snapshot")
+    if lease is None:
+        logger.warning("Lux meter: camera unavailable for a sample")
+        return None
+    try:
+        return _wait_for_metadata_lux(METER_SAMPLE_TIMEOUT)
+    finally:
+        lease.release()
+
+
+def measure_lux():
+    """(lux, "stream") from a fresh reading of the running camera, else (lux, "sample")."""
+    with camera_lock:
+        running = camera_running
+    reading, reading_at = last_lux, last_lux_at
+    if (
+        running
+        and reading is not None
+        and reading_at is not None
+        and time.monotonic() - reading_at < METER_FRESH_SECONDS
+    ):
+        return reading, "stream"
+    lux = sample_lux()
+    return None if lux is None else (lux, "sample")
+
+
+def publish_lux(lux, source):
+    payload = {"lux": round(float(lux), 1), "t": int(time.time()), "source": source}
+    link = mqtt_link
+    if link is not None:
+        link.publish(dogcam_mqtt.LUX_TOPIC, json.dumps(payload), retain=True)
+    return payload
+
+
+def meter_tick():
+    """One metering round. Touches the camera only while metering is ON."""
+    if not meter_enabled.is_set():
+        return None
+    try:
+        reading = measure_lux()
+    except Exception as e:
+        logger.error(f"Lux meter error: {e}")
+        return None
+    if reading is None:
+        logger.warning("Lux meter: no reading this round")
+        return None
+    return publish_lux(*reading)
+
+
+def monitor_meter():
+    """Background thread: meter while ON; meter/set changes wake it at once."""
+    while not _meter_stop.is_set() and not is_shutdown_pending():
+        _meter_wake.clear()
+        meter_tick()
+        _meter_wake.wait(METER_INTERVAL)
+
+
+def start_mqtt():
+    """Start this process's one MQTT client and the meter thread (DOGCAM_MQTT != 0)."""
+    global mqtt_link, meter_thread
+    with _mqtt_start_lock:
+        if mqtt_link is not None:
+            return mqtt_link
+        if not dogcam_mqtt.enabled():
+            logger.info("MQTT disabled (DOGCAM_MQTT=0); lux metering is off")
+            return None
+        link = dogcam_mqtt.MqttLink(
+            dogcam_mqtt.client_id(dogcam_mqtt.STREAM_CLIENT_ID_ENV, dogcam_mqtt.STREAM_CLIENT_ID),
+            subscriptions={dogcam_mqtt.METER_SET_TOPIC: on_meter_set},
+        )
+        if not link.start():
+            return None
+        mqtt_link = link
+        meter_thread = threading.Thread(target=monitor_meter, daemon=True, name="lux-meter")
+        meter_thread.start()
+        return link
 
 
 init_camera()
@@ -1113,6 +1289,8 @@ if DAYNIGHT_ENABLED:
         f"Day/night auto-switch enabled: night<{NIGHT_LUX:.0f} lux (after {DAYNIGHT_NIGHT_AFTER:.0f}s) "
         f"/ day>{DAY_LUX:.0f} lux (after {DAYNIGHT_DAY_AFTER:.0f}s), override={_mode_override}"
     )
+
+start_mqtt()
 
 atexit.register(cleanup)
 
