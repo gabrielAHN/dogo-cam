@@ -846,6 +846,7 @@ class LuxMeterTest(unittest.TestCase):
         # getattr: keep the fixture independent of the API under test.
         cls.link_at_import = getattr(cls.mod, "mqtt_link", "<missing>")
         cls.meter_thread_at_import = getattr(cls.mod, "meter_thread", "<missing>")
+        cls.settle_default = getattr(cls.mod, "METER_SETTLE_SECONDS", "<missing>")
         cls.new_lux_threads = thread_names().count("lux-meter") - lux_threads_before
 
     @classmethod
@@ -872,6 +873,11 @@ class LuxMeterTest(unittest.TestCase):
         patcher = patch.object(m, "mqtt_link", self.link, create=True)
         patcher.start()
         self.addCleanup(patcher.stop)
+        # Most tests exercise the metadata read itself, so they skip the AE
+        # settle wait; the settle tests below set METER_SETTLE_SECONDS again.
+        settle = patch.object(m, "METER_SETTLE_SECONDS", 0.0, create=True)
+        settle.start()
+        self.addCleanup(settle.stop)
 
     def demand_spies(self):
         m = self.mod
@@ -1032,6 +1038,63 @@ class LuxMeterTest(unittest.TestCase):
         released.assert_called_once_with("snapshot")
         self.assertEqual(self.mod.snapshot_demands, 0)
 
+    # -- AE settling after a sample starts the camera ---------------------------
+    def test_sample_settle_time_is_one_second(self):
+        self.assertEqual(self.settle_default, 1.0)
+
+    def test_a_sample_that_starts_the_camera_ignores_lux_from_its_first_second(self):
+        m = self.mod
+        m.on_meter_set(b"ON")
+
+        def settling_metadata():
+            # Until AE converges, a cold camera reports a wrong Lux.
+            if time.monotonic() - m._camera_started_at < 1.0:
+                return {"Lux": 999.0}
+            return {"Lux": 7.0}
+
+        acquire, release = self.demand_spies()
+        started = time.monotonic()
+        with patch.object(m, "METER_SETTLE_SECONDS", 1.0), acquire as acquired, \
+                release as released, self.metadata(side_effect=settling_metadata):
+            payload = m.meter_tick()
+        elapsed = time.monotonic() - started
+        self.assertIsNotNone(payload)
+        self.assertEqual((payload["lux"], payload["source"]), (7.0, "sample"))
+        self.assertGreaterEqual(elapsed, 1.0)
+        self.assertLess(elapsed, m.METER_SAMPLE_TIMEOUT)
+        acquired.assert_called_once_with("snapshot")
+        released.assert_called_once_with("snapshot")
+        self.assertEqual(m.snapshot_demands, 0)
+        self.assertEqual(self.hw["starts"], 1)
+        self.assertEqual(self.link.lux_messages(), [payload])
+
+    def test_settling_counts_against_the_sample_bound(self):
+        m = self.mod
+        m.on_meter_set(b"ON")
+        acquire, release = self.demand_spies()
+        started = time.monotonic()
+        with patch.object(m, "METER_SETTLE_SECONDS", 1.0), patch.object(m, "METER_SAMPLE_TIMEOUT", 0.3), \
+                acquire, release as released, self.metadata(return_value={"Lux": 999.0}):
+            self.assertIsNone(m.meter_tick())
+        self.assertLess(time.monotonic() - started, 0.9, "the sample bound includes the settle time")
+        released.assert_called_once_with("snapshot")
+        self.assertEqual(m.snapshot_demands, 0)
+        self.assertEqual(self.link.published, [])
+        self.assertIsNone(m.last_lux, "an unsettled frame is not recorded as the AE reading")
+
+    def test_a_sample_on_an_already_running_camera_does_not_wait(self):
+        m = self.mod
+        lease = m.acquire_stream_demand("viewer")
+        self.addCleanup(lease.release)
+        m.last_lux = 42.0
+        m.last_lux_at = time.monotonic() - 16  # stale, so the meter takes a sample
+        m.on_meter_set(b"ON")
+        started = time.monotonic()
+        with patch.object(m, "METER_SETTLE_SECONDS", 1.0), self.metadata(return_value={"Lux": 7.25}):
+            payload = m.meter_tick()
+        self.assertLess(time.monotonic() - started, 0.5, "this sample did not start the camera")
+        self.assertEqual((payload["lux"], payload["source"]), (7.2, "sample"))
+
     def test_running_camera_with_fresh_lux_publishes_stream_without_extra_demand(self):
         m = self.mod
         lease = m.acquire_stream_demand("viewer")
@@ -1177,7 +1240,8 @@ class StreamMqttStartupTest(unittest.TestCase):
 
         client.deliver(METER_SET, b"ON")
         self.assertTrue(mod.meter_enabled.is_set())
-        self.assertTrue(wait_until(lambda: any(p[0] == LUX for p in client.published)))
+        # The sample starts the idle camera, so it waits out the 1 s AE settle.
+        self.assertTrue(wait_until(lambda: any(p[0] == LUX for p in client.published), timeout=5))
         topic, payload, qos, retain = next(p for p in client.published if p[0] == LUX)
         self.assertEqual((qos, retain), (1, True))
         message = json.loads(payload)

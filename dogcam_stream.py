@@ -1128,6 +1128,7 @@ def cleanup():
 METER_INTERVAL = max(1.0, _env_float("DOGCAM_METER_INTERVAL", 60.0))
 METER_FRESH_SECONDS = 15.0  # reuse a running camera's Lux up to this age
 METER_SAMPLE_TIMEOUT = 5.0  # max wait for metadata carrying Lux during a sample
+METER_SETTLE_SECONDS = 1.0  # a sample that starts the camera ignores this much AE settling
 meter_enabled = threading.Event()  # meter/set ON
 # Orders meter/set changes against lux publishes, so a reading that finishes
 # after metering turned OFF can never land after the retained clear.
@@ -1167,12 +1168,14 @@ def _clear_lux_locked():
         link.publish(dogcam_mqtt.LUX_TOPIC, "", retain=True)
 
 
-def _wait_for_metadata_lux(timeout):
+def _wait_for_metadata_lux(timeout, not_before=None):
     """Wait up to `timeout` s for camera metadata carrying Lux.
 
     capture_metadata() blocks for the next frame and never returns on a wedged
     pipeline, so the read runs on a helper thread the meter can abandon; at
-    most one such reader exists at a time.
+    most one such reader exists at a time. With `not_before` (a time.monotonic()
+    value) frames before that moment are never read, and the wait for it
+    counts against `timeout`.
     """
     global _lux_reader
     if _lux_reader is not None and _lux_reader.is_alive():
@@ -1184,6 +1187,8 @@ def _wait_for_metadata_lux(timeout):
 
     def read():
         try:
+            if not_before is not None:
+                give_up.wait(max(0.0, not_before - time.monotonic()))
             while not give_up.is_set():
                 try:
                     lux = _metadata_lux()
@@ -1205,13 +1210,23 @@ def _wait_for_metadata_lux(timeout):
 
 
 def sample_lux():
-    """Take a short Lux sample under a snapshot demand, released on every path."""
+    """Take a short Lux sample under a snapshot demand, released on every path.
+
+    If this sample started the camera, Lux from its first METER_SETTLE_SECONDS
+    is ignored while AE converges; the whole wait stays within
+    METER_SAMPLE_TIMEOUT.
+    """
+    asked_at = time.monotonic()
     lease = acquire_stream_demand("snapshot")
     if lease is None:
         logger.warning("Lux meter: camera unavailable for a sample")
         return None
     try:
-        return _wait_for_metadata_lux(METER_SAMPLE_TIMEOUT)
+        started_at = _camera_started_at
+        settled_at = None
+        if started_at is not None and started_at >= asked_at:
+            settled_at = started_at + METER_SETTLE_SECONDS
+        return _wait_for_metadata_lux(METER_SAMPLE_TIMEOUT, not_before=settled_at)
     finally:
         lease.release()
 
