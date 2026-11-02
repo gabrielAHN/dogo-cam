@@ -1382,6 +1382,11 @@ class ExampleUnitTest(unittest.TestCase):
 # deploy/dogcam-deploy.sh
 # ---------------------------------------------------------------------------
 DEPLOY = ROOT / "deploy" / "dogcam-deploy.sh"
+# The live venv has include-system-site-packages = true and uses the apt camera
+# stack (python3-picamera2, numpy, av, ...). Installing requirements.txt there
+# would put pip wheels of those in the venv and shadow apt, so the deploy
+# installs exactly the one package the house modes added.
+PAHO_INSTALL = ["-m", "pip", "install", "--quiet", "paho-mqtt==2.1.0"]
 
 
 def _recorder(label, tail="exit 0\n"):
@@ -1403,7 +1408,8 @@ class DeployScriptTest(unittest.TestCase):
         checkout = root / "dogo-cam"
         venv_bin = checkout / ".venv" / "bin"
         venv_bin.mkdir(parents=True)
-        (checkout / "requirements.txt").write_text("paho-mqtt==2.1.0\n")
+        # The real pin list (picamera2, av, numpy, ...): installing it is the bug.
+        (checkout / "requirements.txt").write_text((ROOT / "requirements.txt").read_text())
         path_bin = root / "bin"
         path_bin.mkdir()
         fakes = {
@@ -1439,22 +1445,24 @@ class DeployScriptTest(unittest.TestCase):
                 calls.append((label, cwd, args))
         return result, calls, checkout
 
-    def test_deploy_installs_requirements_into_the_venv_before_restarting(self):
+    @staticmethod
+    def installs(calls):
+        """Indexes of every pip install into the checkout's venv."""
+        return [
+            index for index, (label, _cwd, args) in enumerate(calls)
+            if (label == "venv-python" and args[:3] == ["-m", "pip", "install"])
+            or (label == "venv-pip" and args[:1] == ["install"])
+        ]
+
+    def test_deploy_installs_only_paho_mqtt_into_the_venv_before_restarting(self):
         result, calls, checkout = self.run_deploy()
         self.assertEqual(result.returncode, 0, result.stderr)
         labels = [label for label, _cwd, _args in calls]
         self.assertFalse([label for label in labels if label.startswith("PATH-")], calls)
 
-        installs = [
-            index for index, (label, _cwd, args) in enumerate(calls)
-            if (label == "venv-python" and args[:3] == ["-m", "pip", "install"])
-            or (label == "venv-pip" and args[:1] == ["install"])
-        ]
+        installs = self.installs(calls)
         self.assertEqual(len(installs), 1, calls)
-        _label, cwd, args = calls[installs[0]]
-        self.assertIn("-r", args, args)
-        requirements = Path(cwd) / args[args.index("-r") + 1]
-        self.assertEqual(requirements.resolve(), (checkout / "requirements.txt").resolve())
+        self.assertEqual(calls[installs[0]][2], PAHO_INSTALL, "install exactly paho-mqtt==2.1.0")
 
         reset = calls.index(("git", str(checkout), ["reset", "--hard", "origin/main"]))
         restarts = [index for index, (label, _cwd, _args) in enumerate(calls) if label == "sudo"]
@@ -1462,14 +1470,40 @@ class DeployScriptTest(unittest.TestCase):
             [calls[index][2] for index in restarts],
             [["systemctl", "restart", "dog-stream"], ["systemctl", "try-restart", "button-control"]],
         )
-        self.assertLess(reset, installs[0], "install the requirements of the new checkout")
-        self.assertLess(installs[0], min(restarts), "install before restarting the services")
+        self.assertLess(reset, installs[0], "install after resetting to the new checkout")
+        for restart in restarts:
+            self.assertLess(installs[0], restart, f"install before {calls[restart][2]}")
+
+    def test_deploy_never_installs_requirements_txt(self):
+        _result, calls, _checkout = self.run_deploy()
+        for label, _cwd, args in calls:
+            for arg in args:
+                self.assertFalse(
+                    arg in ("-r", "--requirement") or arg.startswith("--requirement=")
+                    or "requirements" in arg,
+                    f"{label} was given {args}",
+                )
+        script = DEPLOY.read_text()
+        self.assertFalse("requirements.txt" in script, "the deploy script references requirements.txt")
+        self.assertFalse(re.search(r"(^|\s)(-r|--requirement)\b", script), "the deploy script installs a requirements file")
 
     def test_a_failed_install_restarts_nothing(self):
         result, calls, _checkout = self.run_deploy(install_exit=1)
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual([c for c in calls if c[0] == "sudo"], [], "no restart onto missing requirements")
+        self.assertEqual([calls[index][2] for index in self.installs(calls)], [PAHO_INSTALL], calls)
+        self.assertEqual([c for c in calls if c[0] == "sudo"], [], "no restart onto a missing paho-mqtt")
+        self.assertNotIn("deployed", result.stdout)
 
+    def test_readme_deploy_section_installs_only_paho_mqtt_and_says_why(self):
+        readme = (ROOT / "README.md").read_text()
+        section = readme[readme.index("## Deploying updates"):]
+        section = section[: section.index("\n## ", 1)]
+        self.assertIn(".venv/bin/python -m pip install --quiet 'paho-mqtt==2.1.0'", section)
+        for why in (r"include-system-site-packages", r"\bapt\b", r"picamera2", r"shadow"):
+            self.assertTrue(re.search(why, section), f"the deploy section does not say why ({why!r})")
+        # Nowhere in the README: the full pin list into the Pi's venv.
+        self.assertFalse("pip install -r requirements.txt" in readme, "README still installs requirements.txt")
+        self.assertFalse("installs `requirements.txt`" in readme, "README still says the deploy installs requirements.txt")
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

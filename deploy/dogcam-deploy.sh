@@ -15,10 +15,13 @@ set -euo pipefail
 cd "${DOGCAM_DIR:-$HOME/dogo-cam}"
 git fetch --all --quiet
 git reset --hard origin/main
-# The services run this checkout's virtualenv (.venv/bin/python, .venv/bin/gunicorn):
-# install the new requirements (e.g. paho-mqtt) before restarting them. A failed
-# install stops here, so nothing restarts onto missing packages.
-.venv/bin/python -m pip install --quiet -r requirements.txt
+# The services run this checkout's virtualenv (.venv/bin/python, .venv/bin/gunicorn),
+# which has include-system-site-packages = true and uses the apt camera stack
+# (python3-picamera2 and its numpy, av, pillow, ...). Install ONLY paho-mqtt here:
+# installing the full pinned dependency list would put pip builds of picamera2,
+# av, numpy etc. into the venv and shadow the apt packages. A failed install stops
+# here, so nothing restarts onto a missing paho-mqtt.
+.venv/bin/python -m pip install --quiet 'paho-mqtt==2.1.0'
 sudo systemctl restart dog-stream
 sudo systemctl try-restart button-control
 echo "deployed $(git rev-parse --short HEAD)"
