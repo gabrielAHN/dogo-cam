@@ -826,7 +826,11 @@ class FakeLink:
         return True
 
     def lux_messages(self):
-        return [json.loads(payload) for topic, payload, _retain in list(self.published) if topic == LUX]
+        # An empty payload is the retained-message clear, not a reading.
+        return [json.loads(payload) for topic, payload, _retain in list(self.published) if topic == LUX and payload]
+
+    def lux_clears(self):
+        return [entry for entry in list(self.published) if entry[0] == LUX and not entry[1]]
 
 
 class LuxMeterTest(unittest.TestCase):
@@ -909,6 +913,41 @@ class LuxMeterTest(unittest.TestCase):
         self.assertTrue(m.meter_enabled.is_set(), "unknown payload keeps the current mode")
         m.on_meter_set(b"OFF")
         self.assertFalse(m.meter_enabled.is_set())
+
+    # -- clearing the retained reading when metering turns OFF ------------------
+    def test_metering_turning_off_clears_the_retained_lux(self):
+        m = self.mod
+        m.on_meter_set(b"ON")
+        self.assertEqual(self.link.published, [], "turning metering ON publishes nothing by itself")
+        m.on_meter_set(b"OFF")
+        self.assertEqual(len(self.link.published), 1, self.link.published)
+        topic, payload, retain = self.link.published[0]
+        self.assertEqual(topic, LUX)
+        self.assertIn(payload, ("", b"", None), "an empty retained message deletes the reading")
+        self.assertTrue(retain)
+
+        m.on_meter_set(b" off ")
+        self.assertEqual(len(self.link.lux_clears()), 1, "a repeated OFF is not a new turn-off")
+        m.on_meter_set(b"ON")
+        m.on_meter_set(b"")  # a cleared meter/set means the default OFF
+        self.assertEqual(len(self.link.lux_clears()), 2)
+        with self.assertLogs("dogcam_mqtt", level="WARNING"):
+            m.on_meter_set(b"pause-the-meter")
+        self.assertEqual(len(self.link.published), 2, "an unknown payload changes nothing")
+
+    def test_a_reading_that_finishes_after_metering_turned_off_is_not_published(self):
+        m = self.mod
+        m.on_meter_set(b"ON")
+
+        def off_mid_sample():
+            m.on_meter_set(b"OFF")  # meter/set OFF arrives while the sample runs
+            return {"Lux": 55.0}
+
+        with self.metadata(side_effect=off_mid_sample):
+            self.assertIsNone(m.meter_tick())
+        self.assertEqual(self.link.lux_messages(), [], "no reading may land after the clear")
+        self.assertEqual(len(self.link.lux_clears()), 1)
+        self.assertEqual(m.snapshot_demands, 0)
 
     # -- sampling ---------------------------------------------------------------
     def test_meter_off_takes_no_sample(self):
@@ -1150,6 +1189,28 @@ class StreamMqttStartupTest(unittest.TestCase):
         mod.meter_thread.join(2)
         self.assertFalse(mod.meter_thread.is_alive(), "cleanup stops the meter thread")
         self.assertTrue(client.disconnected)
+
+    def test_meter_off_clears_the_retained_lux_on_the_broker(self):
+        with patch.dict(os.environ, {"DOGCAM_MQTT": "1"}), fake_paho(reachable=False) as paho:
+            mod, _hw = import_stream()
+            self.addCleanup(mod.cleanup)
+        client = paho.instances[0]
+
+        def lux_published():
+            return [entry for entry in list(client.published) if entry[0] == LUX]
+
+        client.fire_connect()
+        client.deliver(METER_SET, b"OFF")  # the retained OFF at connect: metering never ran
+        self.assertEqual(lux_published(), [], "nothing to clear before metering has been ON")
+        client.deliver(METER_SET, b"ON")
+        self.assertTrue(wait_until(lux_published, timeout=5))
+        client.deliver(METER_SET, b"OFF")
+        time.sleep(0.1)
+        published = lux_published()
+        self.assertEqual(len(published), 2, published)
+        _topic, payload, qos, retain = published[-1]
+        self.assertIn(payload, ("", b"", None), "an empty retained message deletes the reading")
+        self.assertEqual((qos, retain), (1, True))
 
     def test_stream_client_id_is_env_overridable(self):
         env = {"DOGCAM_MQTT": "1", "DOGCAM_MQTT_STREAM_CLIENT_ID": "bench-stream"}

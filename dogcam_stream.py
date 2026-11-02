@@ -1129,6 +1129,9 @@ METER_INTERVAL = max(1.0, _env_float("DOGCAM_METER_INTERVAL", 60.0))
 METER_FRESH_SECONDS = 15.0  # reuse a running camera's Lux up to this age
 METER_SAMPLE_TIMEOUT = 5.0  # max wait for metadata carrying Lux during a sample
 meter_enabled = threading.Event()  # meter/set ON
+# Orders meter/set changes against lux publishes, so a reading that finishes
+# after metering turned OFF can never land after the retained clear.
+_meter_lock = threading.Lock()
 _meter_wake = threading.Event()
 _meter_stop = threading.Event()
 _lux_reader = None
@@ -1144,14 +1147,24 @@ def on_meter_set(payload):
     )
     if value is None:
         return
-    was_on = meter_enabled.is_set()
-    if value == "ON":
-        meter_enabled.set()
-    else:
-        meter_enabled.clear()
-    if was_on != meter_enabled.is_set():
+    with _meter_lock:
+        was_on = meter_enabled.is_set()
+        if value == "ON":
+            meter_enabled.set()
+        else:
+            meter_enabled.clear()
+            if was_on:
+                _clear_lux_locked()
+    if was_on != (value == "ON"):
         logger.info(f"Lux metering {value}")
     _meter_wake.set()
+
+
+def _clear_lux_locked():
+    """Metering turned OFF: delete the retained reading (empty retained message)."""
+    link = mqtt_link
+    if link is not None:
+        link.publish(dogcam_mqtt.LUX_TOPIC, "", retain=True)
 
 
 def _wait_for_metadata_lux(timeout):
@@ -1220,10 +1233,15 @@ def measure_lux():
 
 
 def publish_lux(lux, source):
+    """Publish a reading; None (nothing sent) if metering turned OFF meanwhile."""
     payload = {"lux": round(float(lux), 1), "t": int(time.time()), "source": source}
-    link = mqtt_link
-    if link is not None:
-        link.publish(dogcam_mqtt.LUX_TOPIC, json.dumps(payload), retain=True)
+    with _meter_lock:
+        if not meter_enabled.is_set():
+            logger.info("Lux meter: metering turned OFF during this reading; dropping it")
+            return None
+        link = mqtt_link
+        if link is not None:
+            link.publish(dogcam_mqtt.LUX_TOPIC, json.dumps(payload), retain=True)
     return payload
 
 
