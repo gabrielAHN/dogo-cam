@@ -7,9 +7,9 @@ One small helper used by both long-running processes:
 * ``dogcam_stream.py`` (client id ``dogo-cam-stream``) owns lux metering:
   ``jg-casa/dogo-cam/meter/set`` in, ``jg-casa/dogo-cam/lux`` out.
 
-``paho`` is imported lazily inside :meth:`MqttLink.start`, so ``DOGCAM_MQTT=0``
-(tests, bench) and machines without paho-mqtt never need it, and importing this
-module never touches the network.
+``paho`` is imported lazily inside :meth:`MqttLink.start`, and MQTT is opt-in
+(``DOGCAM_MQTT=1``), so tests, the bench and machines without paho-mqtt never
+need it, and importing this module never touches the network.
 """
 
 import logging
@@ -38,12 +38,17 @@ STREAM_CLIENT_ID = "dogo-cam-stream"
 POWER_CLIENT_ID_ENV = "DOGCAM_MQTT_POWER_CLIENT_ID"
 STREAM_CLIENT_ID_ENV = "DOGCAM_MQTT_STREAM_CLIENT_ID"
 
-_DISABLED_VALUES = {"0", "false", "no", "off"}
+_ENABLED_VALUES = {"1", "true", "yes", "on"}
+DISABLED_HINT = "DOGCAM_MQTT is not 1/true/yes/on"
 
 
 def enabled():
-    """MQTT is on unless DOGCAM_MQTT=0 (or false/no/off)."""
-    return os.getenv("DOGCAM_MQTT", "1").strip().lower() not in _DISABLED_VALUES
+    """MQTT is opt-in: on only when DOGCAM_MQTT is 1/true/yes/on (any case).
+
+    Unset or any other value leaves it off, so tests and bench runs can never
+    reach the real broker by accident. Production sets DOGCAM_MQTT=1.
+    """
+    return os.getenv("DOGCAM_MQTT", "").strip().lower() in _ENABLED_VALUES
 
 
 def broker():

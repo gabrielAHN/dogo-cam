@@ -1251,13 +1251,13 @@ def monitor_meter():
 
 
 def start_mqtt():
-    """Start this process's one MQTT client and the meter thread (DOGCAM_MQTT != 0)."""
+    """Start this process's one MQTT client and the meter thread (opt-in: DOGCAM_MQTT=1)."""
     global mqtt_link, meter_thread
     with _mqtt_start_lock:
         if mqtt_link is not None:
             return mqtt_link
         if not dogcam_mqtt.enabled():
-            logger.info("MQTT disabled (DOGCAM_MQTT=0); lux metering is off")
+            logger.info(f"MQTT disabled ({dogcam_mqtt.DISABLED_HINT}); lux metering is off")
             return None
         link = dogcam_mqtt.MqttLink(
             dogcam_mqtt.client_id(dogcam_mqtt.STREAM_CLIENT_ID_ENV, dogcam_mqtt.STREAM_CLIENT_ID),

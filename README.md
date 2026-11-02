@@ -87,7 +87,7 @@ See `.env.example` for the full list (servo tuning, Home Assistant, Cloudflare, 
 
 ## House modes: remote power and lux over MQTT
 
-Home Assistant's house modes (Away turns the camera off, Dog keeps it on and drives the light from the room's brightness) talk to the Pi through retained MQTT topics on the broker at `DOGCAM_MQTT_HOST`:`DOGCAM_MQTT_PORT` (anonymous). Set payloads are plain text, matched case-insensitively after trimming whitespace; an empty payload (a cleared retained message) means the default, and anything else is ignored (logged once) while the current mode is kept.
+Home Assistant's house modes (Away turns the camera off, Dog keeps it on and drives the light from the room's brightness) talk to the Pi through retained MQTT topics on the broker at `DOGCAM_MQTT_HOST`:`DOGCAM_MQTT_PORT` (anonymous). MQTT is opt-in: set `DOGCAM_MQTT=1` in the environment file that both `button-control` and `dog-stream` load (`/etc/dogo-cam.env` on the live Pi, `.env` in the example units). Without it neither script creates a client, so tests and bench runs never reach the broker. Set payloads are plain text, matched case-insensitively after trimming whitespace; an empty payload (a cleared retained message) means the default, and anything else is ignored (logged once) while the current mode is kept.
 
 | Topic | Direction | Payload |
 |---|---|---|
@@ -103,7 +103,7 @@ Home Assistant's house modes (Away turns the camera off, Dog keeps it on and dri
 
 | Variable | Default | Description |
 |---|---|---|
-| `DOGCAM_MQTT` | `1` | `DOGCAM_MQTT=0` disables MQTT entirely (tests, bench): no client, no meter thread, and paho is never imported. |
+| `DOGCAM_MQTT` | unset (off) | Opt-in. Only `1`, `true`, `yes` or `on` (any case) turns MQTT on. Unset or any other value (tests, bench) means no client, no meter thread, and paho is never imported. |
 | `DOGCAM_MQTT_HOST` | `192.168.50.211` | Broker host. |
 | `DOGCAM_MQTT_PORT` | `1883` | Broker port. |
 | `DOGCAM_MQTT_POWER_CLIENT_ID` | `dogo-cam-power` | Client id of `ky004-control.py`; must be unique on the broker. |

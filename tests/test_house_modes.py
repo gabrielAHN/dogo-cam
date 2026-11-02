@@ -11,6 +11,7 @@ import importlib.util
 import json
 import logging
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -24,11 +25,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-# Safety: the whole discover run imports dogcam_stream (and may run
-# ky004-control helpers) many times. MQTT is on by default in production, so
-# without this every such import would try to reach the real broker. Discovery
-# imports every test module before any test runs, so this covers the suite.
-os.environ["DOGCAM_MQTT"] = "0"
+# MQTT is opt-in (DOGCAM_MQTT=1/true/yes/on), so importing dogcam_stream or
+# ky004-control here never reaches a broker. Tests that exercise MQTT set
+# DOGCAM_MQTT=1 themselves, always together with FakePaho.
 
 import dogcam_mqtt  # noqa: E402
 
@@ -204,16 +203,16 @@ class SharedMqttHelperTest(unittest.TestCase):
         mentions = [line for line in logs.output if "toggle-once" in line.lower()]
         self.assertEqual(len(mentions), 1, logs.output)
 
-    def test_mqtt_is_enabled_unless_dogcam_mqtt_is_zero(self):
+    def test_mqtt_is_opt_in(self):
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("DOGCAM_MQTT", None)
-            self.assertTrue(dogcam_mqtt.enabled())
-        for value in ("1", "yes", "on", "true"):
+            self.assertFalse(dogcam_mqtt.enabled(), "unset DOGCAM_MQTT must leave MQTT off")
+        for value in ("1", "true", "yes", "on", "TRUE", "Yes", "ON", " 1 ", "on\n"):
             with patch.dict(os.environ, {"DOGCAM_MQTT": value}):
-                self.assertTrue(dogcam_mqtt.enabled(), value)
-        for value in ("0", "false", "no", "off", " 0 "):
+                self.assertTrue(dogcam_mqtt.enabled(), repr(value))
+        for value in ("", " ", "0", "false", "no", "off", " 0 ", "2", "enabled", "y", "1.0", "onn"):
             with patch.dict(os.environ, {"DOGCAM_MQTT": value}):
-                self.assertFalse(dogcam_mqtt.enabled(), value)
+                self.assertFalse(dogcam_mqtt.enabled(), repr(value))
 
     def test_broker_host_and_port_come_from_env_with_contract_defaults(self):
         with patch.dict(os.environ, {}, clear=False):
@@ -543,6 +542,19 @@ class RemotePowerTest(unittest.TestCase):
         with patch.dict(os.environ, {"DOGCAM_MQTT": "0"}), blocked_paho():
             self.assertIsNone(self.control.start_remote_power(power, wait=0))
         self.assertEqual(power.remote, "OFF")
+
+    def test_unset_dogcam_mqtt_import_and_start_build_no_client(self):
+        # MQTT is opt-in: with DOGCAM_MQTT unset, neither importing the script
+        # nor its __main__ start path constructs a client.
+        self.write_file("OFF\n")
+        power = self.new_power()
+        with patch.dict(os.environ, {}), fake_paho(reachable=True) as paho:
+            os.environ.pop("DOGCAM_MQTT", None)
+            control = load_control()
+            link = control.start_remote_power(power, wait=0)
+        self.assertIsNone(link)
+        self.assertEqual(paho.instances, [])
+        self.assertEqual(power.remote, "OFF", "the persisted value still applies")
 
     def test_unreachable_broker_falls_back_to_the_persisted_file(self):
         self.write_file("OFF\n")
@@ -1092,6 +1104,17 @@ class StreamMqttStartupTest(unittest.TestCase):
         self.assertIsNone(mod.meter_thread)
         self.assertEqual(thread_names().count("lux-meter"), before)
 
+    def test_unset_dogcam_mqtt_import_builds_no_client_and_starts_no_thread(self):
+        before = thread_names().count("lux-meter")
+        with patch.dict(os.environ, {}), fake_paho(reachable=True) as paho:
+            os.environ.pop("DOGCAM_MQTT", None)
+            mod, _hw = import_stream()
+            self.addCleanup(mod.cleanup)
+        self.assertEqual(paho.instances, [], "MQTT is opt-in: no client without DOGCAM_MQTT=1")
+        self.assertIsNone(mod.mqtt_link)
+        self.assertIsNone(mod.meter_thread)
+        self.assertEqual(thread_names().count("lux-meter"), before)
+
     def test_mqtt_on_builds_one_stream_client_and_the_meter_thread(self):
         env = {"DOGCAM_MQTT": "1", "DOGCAM_METER_INTERVAL": "7"}
         with patch.dict(os.environ, env), fake_paho(reachable=False) as paho:
@@ -1160,12 +1183,30 @@ class DocsAndRequirementsTest(unittest.TestCase):
         readme = (ROOT / "README.md").read_text()
         for needle in (
             POWER_SET, POWER_STATE, STATUS, METER_SET, LUX,
-            "DOGCAM_MQTT=0", "DOGCAM_MQTT_HOST", "DOGCAM_MQTT_PORT",
+            "DOGCAM_MQTT=1", "DOGCAM_MQTT_HOST", "DOGCAM_MQTT_PORT",
             "DOGCAM_MQTT_POWER_CLIENT_ID", "DOGCAM_MQTT_STREAM_CLIENT_ID",
             "DOGCAM_REMOTE_POWER_FILE", "/var/lib/dogcam/remote-power", "DOGCAM_METER_INTERVAL",
             "dogo-cam-power", "dogo-cam-stream", '"source"',
         ):
             self.assertTrue(needle in readme, f"README does not mention {needle}")
+
+    def test_readme_documents_mqtt_as_opt_in(self):
+        readme = (ROOT / "README.md").read_text()
+        rows = [line for line in readme.splitlines() if line.startswith("| `DOGCAM_MQTT` |")]
+        self.assertEqual(len(rows), 1, rows)
+        default = rows[0].strip("|").split("|")[1].strip()
+        self.assertNotIn(default, ("`1`", "1"), "DOGCAM_MQTT is not on by default")
+        for value in ("`1`", "`true`", "`yes`", "`on`"):
+            self.assertIn(value, rows[0])
+        self.assertIn("/etc/dogo-cam.env", readme, "README must say where production turns MQTT on")
+
+    def test_env_example_leaves_mqtt_off(self):
+        # A checkout's .env is loaded by load_dotenv() on import, so a copied
+        # example must not switch MQTT on for tests or a bench run.
+        values = re.findall(r"^DOGCAM_MQTT=(.*)$", (ROOT / ".env.example").read_text(), re.MULTILINE)
+        self.assertEqual(len(values), 1, values)
+        with patch.dict(os.environ, {"DOGCAM_MQTT": values[0].split("#")[0].strip()}):
+            self.assertFalse(dogcam_mqtt.enabled())
 
 
 if __name__ == "__main__":

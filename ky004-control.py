@@ -360,7 +360,9 @@ def start_remote_power(power=None, wait=None):
     power.load()
     log.info(f"Remote power from {power.path}: {power.remote}")
     if not dogcam_mqtt.enabled():
-        log.info("MQTT disabled (DOGCAM_MQTT=0); remote power stays at the persisted value")
+        log.info(
+            f"MQTT disabled ({dogcam_mqtt.DISABLED_HINT}); remote power stays at the persisted value"
+        )
         return None
     link = dogcam_mqtt.MqttLink(
         dogcam_mqtt.client_id(dogcam_mqtt.POWER_CLIENT_ID_ENV, dogcam_mqtt.POWER_CLIENT_ID),
