@@ -490,6 +490,33 @@ class RemotePowerTest(unittest.TestCase):
         with self.assertLogs(level="WARNING"):
             self.assertEqual(self.control.load_remote_power(self.path), "ON")
 
+    def test_undecodable_remote_power_file_means_on_with_a_warning(self):
+        # SD corruption or a manual edit: invalid UTF-8 is treated like a
+        # missing file instead of crashing the always-running control process.
+        for content in (b"\xff\xfeOFF\n", b"\x80", b"OFF\xc3"):
+            with self.subTest(content=content):
+                with open(self.path, "wb") as handle:
+                    handle.write(content)
+                try:
+                    with self.assertLogs(level="WARNING") as logs:
+                        value = self.control.load_remote_power(self.path)
+                except ValueError as error:
+                    self.fail(f"load_remote_power crashed on {content!r}: {error!r}")
+                self.assertEqual(value, "ON")
+                self.assertTrue(any(self.path in line for line in logs.output), logs.output)
+
+    def test_startup_with_an_undecodable_file_falls_back_to_on(self):
+        with open(self.path, "wb") as handle:
+            handle.write(b"\xff\xfeOFF\n")
+        power = self.new_power()
+        try:
+            with patch.dict(os.environ, {"DOGCAM_MQTT": "0"}), self.assertLogs(level="WARNING"):
+                link = self.control.start_remote_power(power, wait=0)
+        except ValueError as error:
+            self.fail(f"start_remote_power crashed on an undecodable file: {error!r}")
+        self.assertIsNone(link)
+        self.assertEqual(power.remote, "ON")
+
     def test_an_unwritable_state_file_does_not_block_the_remote_command(self):
         blocker = os.path.join(self.dir, "not-a-dir")
         with open(blocker, "w") as handle:

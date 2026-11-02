@@ -202,13 +202,13 @@ def effective_state(switch_state, remote=None):
 
 
 def load_remote_power(path):
-    """Last persisted remote value; ON when there is no (valid) file."""
+    """Last persisted remote value; ON when there is no (valid) file. Never raises."""
     try:
-        with open(path) as state_file:
+        with open(path, encoding="utf-8") as state_file:
             text = state_file.read()
     except FileNotFoundError:
         return dogcam_mqtt.POWER_DEFAULT
-    except OSError as e:
+    except (OSError, ValueError) as e:  # ValueError covers UnicodeDecodeError
         log.warning(f"Could not read remote power file {path}: {e}; using ON")
         return dogcam_mqtt.POWER_DEFAULT
     value = text.strip().upper()

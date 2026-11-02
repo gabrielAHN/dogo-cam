@@ -202,6 +202,8 @@ class WatchdogRemotePowerTest(unittest.TestCase):
         contents = [
             "OFF", "OFF\n", "off", " OFF\n", "\toff \r\n", "Off\n\n",
             "ON", "on\n", "", "\n", "STANDBY", "OFFLINE", "OF F", "OFF\nON", "0",
+            # Invalid UTF-8: ky004 must read it as ON (no crash), the watchdog as not-OFF.
+            b"\xff\xfeOFF\n",
         ]
         for content in [_MISSING, *contents]:
             with self.subTest(content=content):
