@@ -12,6 +12,8 @@ import json
 import logging
 import os
 import re
+import stat
+import subprocess
 import sys
 import tempfile
 import threading
@@ -1359,6 +1361,99 @@ class ExampleUnitTest(unittest.TestCase):
     def test_readme_no_longer_says_the_example_unit_uses_the_system_python(self):
         readme = (ROOT / "README.md").read_text()
         self.assertFalse("still starts `/usr/bin/python3`" in readme, "README still flags the example unit")
+
+
+# ---------------------------------------------------------------------------
+# deploy/dogcam-deploy.sh
+# ---------------------------------------------------------------------------
+DEPLOY = ROOT / "deploy" / "dogcam-deploy.sh"
+
+
+def _recorder(label, tail="exit 0\n"):
+    """A fake executable that appends 'label\\0cwd\\0arg1\\0...' to $FAKE_LOG."""
+    return (
+        "#!/bin/sh\n"
+        f"{{ printf '%s\\0%s' '{label}' \"$PWD\"; for a in \"$@\"; do printf '\\0%s' \"$a\"; done; "
+        "printf '\\n'; } >> \"$FAKE_LOG\"\n" + tail
+    )
+
+
+class DeployScriptTest(unittest.TestCase):
+    """Run the real deploy script with fake git, sudo and a fake checkout venv."""
+
+    def run_deploy(self, install_exit=0):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        checkout = root / "dogo-cam"
+        venv_bin = checkout / ".venv" / "bin"
+        venv_bin.mkdir(parents=True)
+        (checkout / "requirements.txt").write_text("paho-mqtt==2.1.0\n")
+        path_bin = root / "bin"
+        path_bin.mkdir()
+        fakes = {
+            path_bin / "git": _recorder(
+                "git", 'case "$1" in rev-parse) echo abc1234 ;; esac\nexit 0\n'
+            ),
+            path_bin / "sudo": _recorder("sudo"),
+            # The venv's own interpreter / pip: installing must exit like pip does.
+            venv_bin / "python": _recorder("venv-python", 'exit "${FAKE_INSTALL_EXIT:-0}"\n'),
+            venv_bin / "pip": _recorder("venv-pip", 'exit "${FAKE_INSTALL_EXIT:-0}"\n'),
+        }
+        # Decoys: installing into any interpreter outside the venv is wrong.
+        for name in ("python", "python3", "pip", "pip3", "uv"):
+            fakes[path_bin / name] = _recorder(f"PATH-{name}")
+        for path, body in fakes.items():
+            path.write_text(body)
+            path.chmod(path.stat().st_mode | stat.S_IEXEC)
+        log = root / "calls.log"
+        env = {
+            "PATH": f"{path_bin}:/usr/bin:/bin",
+            "HOME": str(root),
+            "DOGCAM_DIR": str(checkout),
+            "FAKE_LOG": str(log),
+            "FAKE_INSTALL_EXIT": str(install_exit),
+        }
+        result = subprocess.run(
+            ["bash", str(DEPLOY)], env=env, cwd=root, capture_output=True, text=True, timeout=30
+        )
+        calls = []
+        if log.exists():
+            for line in log.read_text().splitlines():
+                label, cwd, *args = line.split("\0")
+                calls.append((label, cwd, args))
+        return result, calls, checkout
+
+    def test_deploy_installs_requirements_into_the_venv_before_restarting(self):
+        result, calls, checkout = self.run_deploy()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        labels = [label for label, _cwd, _args in calls]
+        self.assertFalse([label for label in labels if label.startswith("PATH-")], calls)
+
+        installs = [
+            index for index, (label, _cwd, args) in enumerate(calls)
+            if (label == "venv-python" and args[:3] == ["-m", "pip", "install"])
+            or (label == "venv-pip" and args[:1] == ["install"])
+        ]
+        self.assertEqual(len(installs), 1, calls)
+        _label, cwd, args = calls[installs[0]]
+        self.assertIn("-r", args, args)
+        requirements = Path(cwd) / args[args.index("-r") + 1]
+        self.assertEqual(requirements.resolve(), (checkout / "requirements.txt").resolve())
+
+        reset = calls.index(("git", str(checkout), ["reset", "--hard", "origin/main"]))
+        restarts = [index for index, (label, _cwd, _args) in enumerate(calls) if label == "sudo"]
+        self.assertEqual(
+            [calls[index][2] for index in restarts],
+            [["systemctl", "restart", "dog-stream"], ["systemctl", "try-restart", "button-control"]],
+        )
+        self.assertLess(reset, installs[0], "install the requirements of the new checkout")
+        self.assertLess(installs[0], min(restarts), "install before restarting the services")
+
+    def test_a_failed_install_restarts_nothing(self):
+        result, calls, _checkout = self.run_deploy(install_exit=1)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual([c for c in calls if c[0] == "sudo"], [], "no restart onto missing requirements")
 
 
 if __name__ == "__main__":

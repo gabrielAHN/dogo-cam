@@ -15,6 +15,10 @@ set -euo pipefail
 cd "${DOGCAM_DIR:-$HOME/dogo-cam}"
 git fetch --all --quiet
 git reset --hard origin/main
+# The services run this checkout's virtualenv (.venv/bin/python, .venv/bin/gunicorn):
+# install the new requirements (e.g. paho-mqtt) before restarting them. A failed
+# install stops here, so nothing restarts onto missing packages.
+.venv/bin/python -m pip install --quiet -r requirements.txt
 sudo systemctl restart dog-stream
 sudo systemctl try-restart button-control
 echo "deployed $(git rev-parse --short HEAD)"

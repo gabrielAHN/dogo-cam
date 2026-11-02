@@ -236,6 +236,8 @@ sudo install -m0440 deploy/dogcam-deploy.sudoers /etc/sudoers.d/dogcam-deploy
 # then add the forced-command line (see dogcam-deploy.sh header) for the deploy key to authorized_keys
 ```
 
+The script resets the checkout to `origin/main`, installs `requirements.txt` into the checkout's `.venv` (`.venv/bin/python -m pip install -r requirements.txt`, so that venv needs pip; a uv-created venv gets it with `uv venv --seed` or `.venv/bin/python -m ensurepip`), then restarts `dog-stream` and `button-control`. A failed install stops the deploy before any restart, and the CI run fails.
+
 Existing installations must reinstall both files after updating the repository; the checked-out copies do not replace `/usr/local/bin/dogcam-deploy.sh` or `/etc/sudoers.d/dogcam-deploy` automatically.
 
 ## Power & stability
