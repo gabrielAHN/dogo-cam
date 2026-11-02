@@ -13,16 +13,40 @@
 #    20s) restarts the camera pipeline itself, which is far cheaper than a
 #    service restart and keeps the UI up. Only escalate to a service restart
 #    if the stall persists well past that window (STALL_ESCALATE_SECONDS).
+#
+# Neither applies while Home Assistant holds the camera off: ky004-control.py
+# stops dog-stream and persists the remote value to DOGCAM_REMOTE_POWER_FILE.
+# Restarting the service then would only fight ky004 (and undo Away mode).
 set -u
 
 PORT="${PORT:-5000}"
 BASE="http://127.0.0.1:${PORT}"
 STALL_ESCALATE_SECONDS="${STALL_ESCALATE_SECONDS:-120}"
-STALL_STAMP="/tmp/dogcam-stall-since"
+STALL_STAMP="${DOGCAM_STALL_STAMP:-/tmp/dogcam-stall-since}"
+REMOTE_POWER_FILE="${DOGCAM_REMOTE_POWER_FILE:-/var/lib/dogcam/remote-power}"
 
 http_code() {
   curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$1" 2>/dev/null
 }
+
+# --- 0. remote power --------------------------------------------------------
+# Same parsing as ky004-control.py: whitespace-stripped, case-insensitive.
+# Only OFF stops the watchdog; a missing, unreadable or unrecognised file
+# leaves it working exactly as before (ky004 treats those as ON).
+remote_power=""
+if [ -f "$REMOTE_POWER_FILE" ]; then
+  remote_power="$(cat -- "$REMOTE_POWER_FILE" 2>/dev/null)" || remote_power=""
+fi
+remote_power="${remote_power#"${remote_power%%[![:space:]]*}"}"
+remote_power="${remote_power%"${remote_power##*[![:space:]]}"}"
+case "$remote_power" in
+  [Oo][Ff][Ff])
+    logger -t dogcam-watchdog "camera off by remote ($REMOTE_POWER_FILE is OFF); skipping checks and restarts"
+    # A stall noted before the camera went off is stale by the time it is back on.
+    rm -f "$STALL_STAMP"
+    exit 0
+    ;;
+esac
 
 # --- 1. liveness -----------------------------------------------------------
 alive=0
