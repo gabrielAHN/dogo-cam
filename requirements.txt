@@ -11,6 +11,7 @@ jsonschema-specifications==2025.4.1
 libarchive-c==5.3
 markupsafe==3.0.2
 numpy==2.3.2
+paho-mqtt==2.1.0
 picamera2==0.3.30
 pidng==4.0.9
 piexif==1.1.3

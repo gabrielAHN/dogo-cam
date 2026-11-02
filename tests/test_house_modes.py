@@ -1109,5 +1109,22 @@ class StreamMqttStartupTest(unittest.TestCase):
         self.assertEqual([c.client_id for c in paho.instances], ["bench-stream"])
 
 
+class DocsAndRequirementsTest(unittest.TestCase):
+    def test_requirements_pin_paho_mqtt(self):
+        lines = [line.strip() for line in (ROOT / "requirements.txt").read_text().splitlines()]
+        self.assertIn("paho-mqtt==2.1.0", lines)
+
+    def test_readme_documents_topics_env_and_the_remote_power_file(self):
+        readme = (ROOT / "README.md").read_text()
+        for needle in (
+            POWER_SET, POWER_STATE, STATUS, METER_SET, LUX,
+            "DOGCAM_MQTT=0", "DOGCAM_MQTT_HOST", "DOGCAM_MQTT_PORT",
+            "DOGCAM_MQTT_POWER_CLIENT_ID", "DOGCAM_MQTT_STREAM_CLIENT_ID",
+            "DOGCAM_REMOTE_POWER_FILE", "/var/lib/dogcam/remote-power", "DOGCAM_METER_INTERVAL",
+            "dogo-cam-power", "dogo-cam-stream", '"source"',
+        ):
+            self.assertTrue(needle in readme, f"README does not mention {needle}")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
