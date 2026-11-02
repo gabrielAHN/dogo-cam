@@ -24,6 +24,9 @@ BASE="http://127.0.0.1:${PORT}"
 STALL_ESCALATE_SECONDS="${STALL_ESCALATE_SECONDS:-120}"
 STALL_STAMP="${DOGCAM_STALL_STAMP:-/tmp/dogcam-stall-since}"
 REMOTE_POWER_FILE="${DOGCAM_REMOTE_POWER_FILE:-/var/lib/dogcam/remote-power}"
+# Exists while the camera is off by remote, so that is logged once per OFF
+# period instead of on every 30 s run. /run is root-only and cleared at boot.
+REMOTE_OFF_STAMP="${DOGCAM_REMOTE_OFF_STAMP:-/run/dogcam-remote-off}"
 
 http_code() {
   curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$1" 2>/dev/null
@@ -41,12 +44,18 @@ remote_power="${remote_power#"${remote_power%%[![:space:]]*}"}"
 remote_power="${remote_power%"${remote_power##*[![:space:]]}"}"
 case "$remote_power" in
   [Oo][Ff][Ff])
-    logger -t dogcam-watchdog "camera off by remote ($REMOTE_POWER_FILE is OFF); skipping checks and restarts"
+    if [ ! -e "$REMOTE_OFF_STAMP" ]; then
+      logger -t dogcam-watchdog "camera off by remote ($REMOTE_POWER_FILE is OFF); skipping checks and restarts"
+      # If the stamp can't be written this simply logs again on the next run.
+      touch -- "$REMOTE_OFF_STAMP" 2>/dev/null
+    fi
     # A stall noted before the camera went off is stale by the time it is back on.
     rm -f "$STALL_STAMP"
     exit 0
     ;;
 esac
+# Not OFF: end any OFF period, so the next OFF is logged again.
+rm -f "$REMOTE_OFF_STAMP"
 
 # --- 1. liveness -----------------------------------------------------------
 alive=0

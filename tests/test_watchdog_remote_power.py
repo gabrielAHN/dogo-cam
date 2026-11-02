@@ -83,6 +83,7 @@ class WatchdogRemotePowerTest(unittest.TestCase):
             path.chmod(path.stat().st_mode | stat.S_IEXEC)
         self.power_file = self.tmp / "remote-power"
         self.stall_stamp = self.tmp / "dogcam-stall-since"
+        self.off_stamp = self.tmp / "dogcam-remote-off"
 
     # -- helpers ------------------------------------------------------------
     def write_power(self, content):
@@ -103,8 +104,9 @@ class WatchdogRemotePowerTest(unittest.TestCase):
             "FAKE_CURL_CODE": curl_code,
             "PORT": "5000",
             "DOGCAM_REMOTE_POWER_FILE": str(self.power_file),
-            # Keep the tests off the real /tmp/dogcam-stall-since.
+            # Keep the tests off the real stall and OFF-period stamps.
             "DOGCAM_STALL_STAMP": str(self.stall_stamp),
+            "DOGCAM_REMOTE_OFF_STAMP": str(self.off_stamp),
         }
         env.update(extra_env or {})
         result = subprocess.run(
@@ -118,11 +120,15 @@ class WatchdogRemotePowerTest(unittest.TestCase):
         self.last_stderr = result.stderr
         return result.returncode, calls
 
-    def assertSkipped(self, returncode, calls):
+    def assertSkipped(self, returncode, calls, logged=True):
+        """Skipped everything; `logged`: this run is the first of an OFF period."""
         self.assertEqual(returncode, 0, self.last_stderr)
         self.assertEqual(calls["curl"], [], "no HTTP check while the camera is off by remote")
         self.assertEqual(calls["systemctl"], [], "no restart while the camera is off by remote")
         self.assertEqual(calls["sleep"], [])
+        if not logged:
+            self.assertEqual(calls["logger"], [], "'off by remote' is logged once per OFF period")
+            return
         self.assertEqual(len(calls["logger"]), 1, calls["logger"])
         argv = calls["logger"][0]
         self.assertEqual(argv[:2], ["-t", "dogcam-watchdog"], argv)
@@ -147,6 +153,8 @@ class WatchdogRemotePowerTest(unittest.TestCase):
     def test_remote_off_is_matched_after_strip_and_case_insensitively(self):
         for content in ("off", " OFF\n", "Off", "oFf", "OFF", "\toff \r\n", "\n\n  OFF  \n\n"):
             with self.subTest(content=content):
+                if self.off_stamp.exists():
+                    self.off_stamp.unlink()  # check each spelling as the start of an OFF period
                 self.assertSkipped(*self.run_watchdog(curl_code="000", power=content))
 
     def test_remote_off_drops_a_stale_stall_record(self):
@@ -155,6 +163,42 @@ class WatchdogRemotePowerTest(unittest.TestCase):
         self.stall_stamp.write_text("1\n")
         self.assertSkipped(*self.run_watchdog(curl_code="000", power="OFF\n"))
         self.assertFalse(self.stall_stamp.exists())
+
+    # -- "off by remote" is logged once per OFF period, not every 30 s ------------
+    def test_off_by_remote_is_logged_on_entering_off_not_on_later_runs(self):
+        self.assertSkipped(*self.run_watchdog(curl_code="000", power="OFF\n"))
+        for _ in range(3):
+            self.assertSkipped(*self.run_watchdog(curl_code="000"), logged=False)
+
+    def test_off_by_remote_is_logged_again_after_on_then_off(self):
+        self.assertSkipped(*self.run_watchdog(curl_code="000", power="OFF\n"))
+        self.assertSkipped(*self.run_watchdog(curl_code="000"), logged=False)
+        returncode, calls = self.run_watchdog(curl_code="200", power="ON\n")
+        self.assertEqual(returncode, 0, self.last_stderr)
+        self.assertEqual([c[-1] for c in calls["curl"]], [LIVENESS_URL, HEALTH_URL], "ON: checks resume")
+        self.assertEqual(calls["logger"], [])
+        self.assertSkipped(*self.run_watchdog(curl_code="000", power="OFF\n"))
+        self.assertSkipped(*self.run_watchdog(curl_code="000"), logged=False)
+
+    def test_a_missing_file_also_ends_the_off_period(self):
+        self.assertSkipped(*self.run_watchdog(curl_code="000", power="OFF\n"))
+        self.power_file.unlink()
+        self.assertRestartedAsUnresponsive(*self.run_watchdog(curl_code="000"))
+        self.assertSkipped(*self.run_watchdog(curl_code="000", power="OFF\n"))
+
+    def test_off_period_stamp_path_comes_from_the_environment(self):
+        self.assertTrue("${DOGCAM_REMOTE_OFF_STAMP:-" in WATCHDOG.read_text(), "no DOGCAM_REMOTE_OFF_STAMP override")
+        self.run_watchdog(curl_code="000", power="OFF\n")
+        self.assertTrue(self.off_stamp.exists(), "the OFF period is recorded in DOGCAM_REMOTE_OFF_STAMP")
+        self.run_watchdog(curl_code="200", power="ON\n")
+        self.assertFalse(self.off_stamp.exists(), "leaving OFF removes the record")
+
+    def test_an_unwritable_off_stamp_still_skips_and_logs_quietly(self):
+        # Degrades to logging on every run, never to an error or a restart.
+        env = {"DOGCAM_REMOTE_OFF_STAMP": str(self.tmp / "no-such-dir" / "dogcam-remote-off")}
+        for _ in range(2):
+            self.assertSkipped(*self.run_watchdog(curl_code="000", power="OFF\n", extra_env=env))
+            self.assertEqual(self.last_stderr, "")
 
     # -- remote ON / no usable file: behaviour unchanged ---------------------
     def test_remote_on_keeps_the_unresponsive_restart(self):
