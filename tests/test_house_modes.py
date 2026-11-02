@@ -815,8 +815,18 @@ def import_stream():
     return dogcam_stream, hw
 
 
-def thread_names():
-    return [thread.name for thread in threading.enumerate()]
+def lux_meter_threads():
+    """The live lux-meter threads; compare sets so a thread left over from an
+    earlier test that exits meanwhile can't change the result."""
+    return {thread for thread in threading.enumerate() if thread.name == "lux-meter"}
+
+
+def stop_stream(mod):
+    """cleanup(), then wait for the meter thread so it never outlives the test."""
+    mod.cleanup()
+    thread = getattr(mod, "meter_thread", None)
+    if thread is not None:
+        thread.join(6)
 
 
 class FakeLink:
@@ -841,7 +851,7 @@ class LuxMeterTest(unittest.TestCase):
         cls.environ = patch.dict(os.environ, dict(STREAM_ENV, DOGCAM_MQTT="0"))
         cls.environ.start()
         os.environ.pop("DOGCAM_METER_INTERVAL", None)
-        lux_threads_before = thread_names().count("lux-meter")
+        lux_threads_before = lux_meter_threads()
         with fake_paho(reachable=True) as paho:
             cls.mod, cls.hw = import_stream()
         cls.paho = paho
@@ -849,7 +859,7 @@ class LuxMeterTest(unittest.TestCase):
         cls.link_at_import = getattr(cls.mod, "mqtt_link", "<missing>")
         cls.meter_thread_at_import = getattr(cls.mod, "meter_thread", "<missing>")
         cls.settle_default = getattr(cls.mod, "METER_SETTLE_SECONDS", "<missing>")
-        cls.new_lux_threads = thread_names().count("lux-meter") - lux_threads_before
+        cls.new_lux_threads = len(lux_meter_threads() - lux_threads_before)
 
     @classmethod
     def tearDownClass(cls):
@@ -1200,24 +1210,24 @@ class StreamMqttStartupTest(unittest.TestCase):
         self.addCleanup(environ.stop)
 
     def test_mqtt_off_needs_no_paho_and_starts_nothing(self):
-        before = thread_names().count("lux-meter")
+        before = lux_meter_threads()
         with patch.dict(os.environ, {"DOGCAM_MQTT": "0"}), blocked_paho():
             mod, _hw = import_stream()
-        self.addCleanup(mod.cleanup)
+        self.addCleanup(stop_stream, mod)
         self.assertIsNone(mod.mqtt_link)
         self.assertIsNone(mod.meter_thread)
-        self.assertEqual(thread_names().count("lux-meter"), before)
+        self.assertEqual(lux_meter_threads() - before, set())
 
     def test_unset_dogcam_mqtt_import_builds_no_client_and_starts_no_thread(self):
-        before = thread_names().count("lux-meter")
+        before = lux_meter_threads()
         with patch.dict(os.environ, {}), fake_paho(reachable=True) as paho:
             os.environ.pop("DOGCAM_MQTT", None)
             mod, _hw = import_stream()
-            self.addCleanup(mod.cleanup)
+            self.addCleanup(stop_stream, mod)
         self.assertEqual(paho.instances, [], "MQTT is opt-in: no client without DOGCAM_MQTT=1")
         self.assertIsNone(mod.mqtt_link)
         self.assertIsNone(mod.meter_thread)
-        self.assertEqual(thread_names().count("lux-meter"), before)
+        self.assertEqual(lux_meter_threads() - before, set())
 
     def test_mqtt_on_builds_one_stream_client_and_the_meter_thread(self):
         env = {"DOGCAM_MQTT": "1", "DOGCAM_METER_INTERVAL": "7"}
@@ -1225,7 +1235,7 @@ class StreamMqttStartupTest(unittest.TestCase):
             for name in ("DOGCAM_MQTT_HOST", "DOGCAM_MQTT_PORT", "DOGCAM_MQTT_STREAM_CLIENT_ID"):
                 os.environ.pop(name, None)
             mod, hw = import_stream()
-            self.addCleanup(mod.cleanup)
+            self.addCleanup(stop_stream, mod)
             self.assertIs(mod.start_mqtt(), mod.mqtt_link, "one MQTT client per process")
         self.assertEqual(mod.METER_INTERVAL, 7)
         self.assertEqual(len(paho.instances), 1)
@@ -1259,7 +1269,7 @@ class StreamMqttStartupTest(unittest.TestCase):
     def test_meter_off_clears_the_retained_lux_on_the_broker(self):
         with patch.dict(os.environ, {"DOGCAM_MQTT": "1"}), fake_paho(reachable=False) as paho:
             mod, _hw = import_stream()
-            self.addCleanup(mod.cleanup)
+            self.addCleanup(stop_stream, mod)
         client = paho.instances[0]
 
         def lux_published():
@@ -1271,18 +1281,23 @@ class StreamMqttStartupTest(unittest.TestCase):
         client.deliver(METER_SET, b"ON")
         self.assertTrue(wait_until(lux_published, timeout=5))
         client.deliver(METER_SET, b"OFF")
-        time.sleep(0.1)
+        # Let the meter finish any round still in progress while the link is up.
+        mod._meter_stop.set()
+        mod._meter_wake.set()
+        mod.meter_thread.join(6)
         published = lux_published()
-        self.assertEqual(len(published), 2, published)
+        clears = [entry for entry in published if not entry[1]]
+        self.assertEqual(len(clears), 1, published)
+        self.assertTrue([entry for entry in published if entry[1]], "a reading came first")
         _topic, payload, qos, retain = published[-1]
-        self.assertIn(payload, ("", b"", None), "an empty retained message deletes the reading")
+        self.assertIn(payload, ("", b"", None), "the clear is the last word: " + repr(published))
         self.assertEqual((qos, retain), (1, True))
 
     def test_stream_client_id_is_env_overridable(self):
         env = {"DOGCAM_MQTT": "1", "DOGCAM_MQTT_STREAM_CLIENT_ID": "bench-stream"}
         with patch.dict(os.environ, env), fake_paho() as paho:
             mod, _hw = import_stream()
-            self.addCleanup(mod.cleanup)
+            self.addCleanup(stop_stream, mod)
         self.assertEqual([c.client_id for c in paho.instances], ["bench-stream"])
 
 
