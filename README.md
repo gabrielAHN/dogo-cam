@@ -6,9 +6,10 @@ Manual Raspberry Pi dog camera: Flask web UI, live Picamera2 stream, pan/tilt MG
 
 ## Layout
 
-- `dogcam_stream.py` — Flask app + camera endpoints
+- `dogcam_stream.py` — Flask app + camera endpoints (+ lux metering over MQTT)
 - `servo_control_rpigpio.py` — MG90S pan/tilt control
-- `ky004-control.py` — optional GPIO on/off switch
+- `ky004-control.py` — optional GPIO on/off switch + remote power over MQTT
+- `dogcam_mqtt.py` — shared MQTT helper for the two scripts above (see [House modes](#house-modes-remote-power-and-lux-over-mqtt))
 - `templates/` — camera UI + login
 - `service_startup/` — example systemd units
 - `deploy/` — CI deploy script + scoped sudoers
@@ -33,7 +34,7 @@ Servos and fan draw from the Pi 5V rail with shared ground. The mount is inverte
 
 > **Camera note:** the sensor reports as a plain `ov5647` regardless of the lens/filter, so software can't tell it's the NoIR wide-angle module — the NoIR behaviour is configured, not auto-detected. See [Camera capabilities](#camera-capabilities) for the tuning, day/night and image config.
 
-**Switch** (`ky004-control.py`): `SWITCH_MODE=auto` probes `GPIO17` at startup. A floating pin means no switch is attached, so the camera is kept on and restarted if it stops. A connected switch keeps the existing behavior: ON (`GPIO17` low) starts `dog-stream` (and `cloudflared-tunnel` if enabled); OFF stops them cleanly. Use `SWITCH_MODE=gpio` to force hardware control or `SWITCH_MODE=always-on` to bypass GPIO explicitly. Set `SWITCH_ON_VALUE=1` if your module is inverted, or `SWITCH_PIN` for a different GPIO.
+**Switch** (`ky004-control.py`): `SWITCH_MODE=auto` probes `GPIO17` at startup. A floating pin means no switch is attached, so the camera is kept on and restarted if it stops. A connected switch keeps the existing behavior: ON (`GPIO17` low) starts `dog-stream` (and `cloudflared-tunnel` if enabled); OFF stops them cleanly. Use `SWITCH_MODE=gpio` to force hardware control or `SWITCH_MODE=always-on` to bypass GPIO explicitly. Set `SWITCH_ON_VALUE=1` if your module is inverted, or `SWITCH_PIN` for a different GPIO. Home Assistant can additionally hold the camera off remotely; see [House modes](#house-modes-remote-power-and-lux-over-mqtt).
 
 ## Controls
 
@@ -83,6 +84,34 @@ See `.env.example` for the full list (servo tuning, Home Assistant, Cloudflare, 
 **Trust boundary.** `Remote-*` and `X-Forwarded-*` headers are believed only when the TCP peer is listed in `TRUSTED_PROXY_ADDRS` (IPs/CIDRs; default `127.0.0.1,::1` for the watchdog). Add exactly the proxy's address, e.g. `TRUSTED_PROXY_ADDRS=127.0.0.1,::1,192.168.100.1` when the proxy reaches the Pi over Nebula; never a LAN range. Requests from any other peer are treated as anonymous, whatever headers they carry. Also keep gunicorn off the LAN: the systemd unit binds only `127.0.0.1:5000` and the Pi's Nebula address `192.168.100.10:5000`, never `0.0.0.0`.
 
 **Temperature source** — `/temp` reads a local DHT22 (`TEMP_SOURCE=sensor`, needs `adafruit_dht`, wired to `GPIO4`) or Home Assistant (`TEMP_SOURCE=ha` + `HA_URL`/`HA_TOKEN`/`HA_*_ENTITY` using an HA long‑lived token). HA mode skips the DHT22 dependency.
+
+## House modes: remote power and lux over MQTT
+
+Home Assistant's house modes (Away turns the camera off, Dog keeps it on and drives the light from the room's brightness) talk to the Pi through retained MQTT topics on the broker at `DOGCAM_MQTT_HOST`:`DOGCAM_MQTT_PORT` (anonymous). MQTT is opt-in: set `DOGCAM_MQTT=1` in the environment file that both `button-control` and `dog-stream` load (`/etc/dogo-cam.env` on the live Pi, `.env` in the example units). Without it neither script creates a client, so tests and bench runs never reach the broker. Set payloads are plain text, matched case-insensitively after trimming whitespace; an empty payload (a cleared retained message) means the default, and anything else is ignored (logged once) while the current mode is kept.
+
+| Topic | Direction | Payload |
+|---|---|---|
+| `jg-casa/dogo-cam/power/set` | HA → `ky004-control.py` | `ON` / `OFF`, retained. Default `ON`. |
+| `jg-casa/dogo-cam/power/state` | `ky004-control.py` → HA | Retained JSON `{"remote": "ON", "switch": "ON", "camera": "ON", "t": 1762059999}` on every change, on (re)connect and every 300 s. `switch` is `ON` in always-on mode; `camera` is the effective state. |
+| `jg-casa/dogo-cam/status` | `ky004-control.py` → HA | Retained `online` on connect; the broker publishes the retained LWT `offline` if the script disappears. |
+| `jg-casa/dogo-cam/meter/set` | HA → `dogcam_stream.py` | `ON` / `OFF`, retained. Default `OFF`. |
+| `jg-casa/dogo-cam/lux` | `dogcam_stream.py` → HA | Retained JSON `{"lux": 12.3, "t": 1762059999, "source": "stream"}` after every reading while metering is ON; `"source"` is `"stream"` or `"sample"`. When metering turns OFF, an empty retained message deletes the last reading. |
+
+**Remote power** (`ky004-control.py`, MQTT client id `dogo-cam-power`). The camera runs when the hardware switch is ON **and** the remote value is not `OFF`; in switch-less always-on mode the remote value alone decides. A remote change is applied on the control loop's next 0.1 s tick through the same start/stop path as the switch, and the 5 s reconcile enforces the effective state, so a remote `OFF` stays off. The power LED shows the effective state. Each remote value received from the broker is written atomically to `DOGCAM_REMOTE_POWER_FILE` (default `/var/lib/dogcam/remote-power`, one word: `ON` or `OFF`). At startup the script loads that file, then waits up to 5 s for the broker's retained value before its first start/stop; if the broker can't be reached it keeps the file's value, and with no file it uses `ON`. `dogcam-watchdog.sh` reads the same file (if you override `DOGCAM_REMOTE_POWER_FILE`, set it in the `.env` that both `button-control` and the watchdog load): while it holds `OFF` (trimmed, any case) the watchdog exits without probing or restarting `dog-stream`, so it does not start the service ky004 stopped. It logs `camera off by remote` once per OFF period, not on every 30 s run: the first OFF run creates the stamp file `DOGCAM_REMOTE_OFF_STAMP` (default `/run/dogcam-remote-off`, cleared at boot), and any later run that does not see `OFF` removes it, so the next OFF is logged again. A missing, unreadable or unrecognised file leaves the watchdog unchanged.
+
+**Lux metering** (`dogcam_stream.py`, MQTT client id `dogo-cam-stream`; it runs only while the camera service is up). While metering is ON, a background thread publishes a reading at least every `DOGCAM_METER_INTERVAL` seconds. If the camera is already recording for viewers and its AE `Lux` reading is under 15 s old, that reading is published (`"source": "stream"`). Otherwise the meter takes a short sample the way `/snapshot` does: it takes a snapshot stream demand (starting an idle camera), waits up to 5 s for camera metadata carrying `Lux`, and releases the demand on every path (`"source": "sample"`), so `STREAM_IDLE_TIMEOUT` stops the camera again afterwards. When the sample itself started the camera, it ignores `Lux` from the first 1.0 s of frames while auto-exposure settles; that second counts toward the 5 s. When `meter/set` turns metering from ON to OFF, the script publishes an empty retained message to `jg-casa/dogo-cam/lux`, so the broker no longer hands an old reading to Home Assistant (for example after an HA restart); a reading still in progress at that moment is dropped. Metering adds no HTTP routes, and nothing else happens while it is OFF.
+
+| Variable | Default | Description |
+|---|---|---|
+| `DOGCAM_MQTT` | unset (off) | Opt-in. Only `1`, `true`, `yes` or `on` (any case) turns MQTT on. Unset or any other value (tests, bench) means no client, no meter thread, and paho is never imported. |
+| `DOGCAM_MQTT_HOST` | `192.168.50.211` | Broker host. |
+| `DOGCAM_MQTT_PORT` | `1883` | Broker port. |
+| `DOGCAM_MQTT_POWER_CLIENT_ID` | `dogo-cam-power` | Client id of `ky004-control.py`; must be unique on the broker. |
+| `DOGCAM_MQTT_STREAM_CLIENT_ID` | `dogo-cam-stream` | Client id of `dogcam_stream.py`; must be unique on the broker. |
+| `DOGCAM_REMOTE_POWER_FILE` | `/var/lib/dogcam/remote-power` | Persisted remote power value. The directory must be writable by the `button-control` service user. |
+| `DOGCAM_METER_INTERVAL` | `60` | Longest gap in seconds between lux readings while metering is ON (minimum 1). |
+
+`paho-mqtt` is a project dependency (`pyproject.toml`, and pinned to 2.1.0 in `requirements.txt`); the helper also accepts the 1.x client API. Install it into the interpreter that runs each script. The deployed units run both scripts from the project virtualenv, not the system `python3`: `button-control.service` starts `<checkout>/.venv/bin/python ky004-control.py` (for example `/opt/dogo-cam/.venv/bin/python /opt/dogo-cam/ky004-control.py`) and `dog-stream.service` starts that venv's `gunicorn`, so installing paho-mqtt into that venv covers both. The example `service_startup/button-control.service` does the same (`<checkout>/.venv/bin/python <checkout>/ky004-control.py`). On the Pi, install only paho-mqtt into the venv: `.venv/bin/python -m pip install --quiet 'paho-mqtt==2.1.0'`, which the deploy script runs. Do not install the full pin list there; it would shadow the apt camera stack (see [Deploying updates](#deploying-updates)). Without paho, or with the broker unreachable, both scripts keep running: remote power follows the persisted file, and metering stays OFF until a `meter/set` `ON` arrives.
 
 ## Camera capabilities
 
@@ -207,6 +236,10 @@ sudo install -m0440 deploy/dogcam-deploy.sudoers /etc/sudoers.d/dogcam-deploy
 # then add the forced-command line (see dogcam-deploy.sh header) for the deploy key to authorized_keys
 ```
 
+The script resets the checkout to `origin/main`, installs **only** `paho-mqtt` into the checkout's `.venv` (`.venv/bin/python -m pip install --quiet 'paho-mqtt==2.1.0'`, so that venv needs pip; a uv-created venv gets it with `uv venv --seed` or `.venv/bin/python -m ensurepip`), then restarts `dog-stream` and `button-control`. A failed install stops the deploy before any restart, and the CI run fails.
+
+It deliberately does not install the full pinned dependency list. The Pi's venv (`/opt/dogo-cam/.venv`) has `include-system-site-packages = true` and uses the apt camera stack (`python3-picamera2` and apt's numpy, av, pillow, simplejpeg, ...). A pip install of all the pins would put PyPI copies of picamera2 0.3.30, av 15.0.0, numpy 2.3.2, pillow, simplejpeg and more into the venv, where they shadow the apt packages (a dry run on the Pi 3B showed exactly that). `paho-mqtt` is the one package the house modes added, so it is the only one the deploy installs.
+
 Existing installations must reinstall both files after updating the repository; the checked-out copies do not replace `/usr/local/bin/dogcam-deploy.sh` or `/etc/sudoers.d/dogcam-deploy` automatically.
 
 ## Power & stability
@@ -220,7 +253,7 @@ A Pi 3B funnels all current through its micro‑USB / polyfuse (~2–2.5A), so c
 - **Self‑healing (three layers):**
   1. `/video_feed` gives up after `STREAM_FRAME_TIMEOUT` (5s) without a frame. Gunicorn also reserves request capacity beyond `MAX_VIEWERS`, so healthy long-lived MJPEG streams cannot starve servo controls or health checks. The page reconnects the `<img>` automatically and shows *🟡 Stream Stalled* meanwhile.
   2. If no frames arrive for `STREAM_STALL_RESTART_AFTER` (20s) the app tears down and re‑creates the Picamera2 pipeline in‑process — no service restart, the UI stays up.
-  3. `dogcam-watchdog.timer` restarts the *service* only if the app is dead, or if `/stream_health` stays 503 past `STALL_ESCALATE_SECONDS` (120s). `dog-stream.service` uses `TimeoutStopSec=15` + `KillMode=mixed` so a stuck camera cleanup can't wedge it in `deactivating`.
+  3. `dogcam-watchdog.timer` restarts the *service* only if the app is dead, or if `/stream_health` stays 503 past `STALL_ESCALATE_SECONDS` (120s), and never while the remote-power file says `OFF` (see [House modes](#house-modes-remote-power-and-lux-over-mqtt)). `dog-stream.service` uses `TimeoutStopSec=15` + `KillMode=mixed` so a stuck camera cleanup can't wedge it in `deactivating`.
 - `GET /stream_health` → `{"state", "viewers", "healthy", "frames", "last_frame_age_s", ...}` for dashboards and external monitors. Intentional `idle`, `cooldown`, and `disabled` states return 200; demanded stalls/unavailability return 503.
 - Blank feed but `camera_status` says available → reseat the **CSI ribbon** (a loose cable gives "Camera frontend timed out" / zero frames while the sensor still enumerates on I²C). Check `journalctl -u dog-stream | grep -i "Restarting camera"` to see how often the pipeline is stalling.
 - Tests: `python3 -m unittest tests.test_stream_stall` runs the app off‑Pi with stubbed camera libs and reproduces the thread‑exhaustion bug.
